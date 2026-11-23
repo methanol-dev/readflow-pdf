@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.FormatSize
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -83,6 +84,7 @@ import com.doctruyen.reader.data.model.FontFamilyType
 import com.doctruyen.reader.data.model.PdfPageContent
 import com.doctruyen.reader.data.model.ReaderSettings
 import com.doctruyen.reader.data.model.ViewMode
+import com.doctruyen.reader.tts.TtsState
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -99,6 +101,7 @@ fun ReaderScreen(
     val isLoadingPage by viewModel.isLoadingPage.collectAsState()
     val bookmarks by viewModel.bookmarks.collectAsState()
     val outline by viewModel.outline.collectAsState()
+    val ttsState by viewModel.ttsState.collectAsState()
 
     var controlsVisible by remember { mutableStateOf(true) }
     var showTypographySheet by remember { mutableStateOf(false) }
@@ -110,6 +113,7 @@ fun ReaderScreen(
     }
 
     BackHandler {
+        viewModel.stopTts()
         onBack()
     }
 
@@ -147,6 +151,7 @@ fun ReaderScreen(
                             fontFamily = activeFontFamily,
                             viewModel = viewModel,
                             currentPage = currentPage,
+                            ttsState = ttsState,
                             onToggleControls = { controlsVisible = !controlsVisible }
                         )
                     } else {
@@ -160,6 +165,7 @@ fun ReaderScreen(
                             textColor = activeTextColor,
                             fontFamily = activeFontFamily,
                             isLoading = isLoadingPage,
+                            ttsState = ttsState,
                             onPrevPage = {
                                 if (currentPage > 0) viewModel.onPageChanged(currentPage - 1)
                             },
@@ -212,7 +218,10 @@ fun ReaderScreen(
                             )
                         },
                         navigationIcon = {
-                            IconButton(onClick = onBack) {
+                            IconButton(onClick = {
+                                viewModel.stopTts()
+                                onBack()
+                            }) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Trở về thư viện")
                             }
                         },
@@ -225,6 +234,15 @@ fun ReaderScreen(
                                 Icon(
                                     if (settings.viewMode == ViewMode.REFLOW) Icons.Default.PictureAsPdf else Icons.AutoMirrored.Filled.MenuBook,
                                     contentDescription = if (settings.viewMode == ViewMode.REFLOW) "Xem trang gốc" else "Chế độ đọc chữ"
+                                )
+                            }
+
+                            // TTS Audiobook reading
+                            IconButton(onClick = { viewModel.toggleTts() }) {
+                                Icon(
+                                    Icons.Default.Headphones,
+                                    contentDescription = if (ttsState.isPlaying) "Tạm dừng đọc TTS" else "Nghe sách nói (TTS)",
+                                    tint = if (ttsState.isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                                 )
                             }
 
@@ -254,7 +272,7 @@ fun ReaderScreen(
 
         // Animated Bottom Control Bar (with navigationBarsPadding to CLEAR 3 system buttons!)
         AnimatedVisibility(
-            visible = controlsVisible,
+            visible = controlsVisible && !ttsState.isPlaying && !ttsState.isPaused,
             enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
             exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter)
@@ -332,6 +350,17 @@ fun ReaderScreen(
                 }
             }
         }
+
+        // TTS Floating Audio Player (Shows when playing or paused)
+        TtsPlayerBar(
+            ttsState = ttsState,
+            onTogglePlay = { viewModel.toggleTts() },
+            onPrevious = { viewModel.previousTtsParagraph() },
+            onNext = { viewModel.nextTtsParagraph() },
+            onStop = { viewModel.stopTts() },
+            onSetSpeed = { viewModel.setTtsSpeechRate(it) },
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
     }
 
     // Bottom Sheets & Dialogs
@@ -392,6 +421,7 @@ private fun SinglePageReflowView(
     textColor: Color,
     fontFamily: FontFamily,
     isLoading: Boolean,
+    ttsState: TtsState,
     onPrevPage: () -> Unit,
     onNextPage: () -> Unit,
     onToggleControls: () -> Unit
@@ -402,6 +432,17 @@ private fun SinglePageReflowView(
     // Reset scroll when page changes
     LaunchedEffect(bookId, currentPage) {
         listState.scrollToItem(0)
+    }
+
+    // Auto-scroll to follow TTS speech cursor
+    LaunchedEffect(ttsState.currentPage, ttsState.currentParagraphIndex) {
+        if ((ttsState.isPlaying || ttsState.isPaused) &&
+            ttsState.currentPage == currentPage &&
+            ttsState.currentParagraphIndex >= 0
+        ) {
+            val itemIndex = ttsState.currentParagraphIndex + 1
+            listState.animateScrollToItem(itemIndex.coerceAtLeast(0))
+        }
     }
 
     Box(
@@ -468,16 +509,31 @@ private fun SinglePageReflowView(
             }
 
             if (pageContent != null && pageContent.paragraphs.isNotEmpty()) {
-                items(pageContent.paragraphs) { paragraph ->
+                items(pageContent.paragraphs.size) { pIndex ->
+                    val paragraph = pageContent.paragraphs[pIndex]
+                    val isSpeaking = (ttsState.isPlaying || ttsState.isPaused) &&
+                            ttsState.currentPage == currentPage &&
+                            ttsState.currentParagraphIndex == pIndex
+
                     Text(
                         text = paragraph,
-                        color = textColor,
+                        color = if (isSpeaking) MaterialTheme.colorScheme.primary else textColor,
+                        fontWeight = if (isSpeaking) FontWeight.SemiBold else FontWeight.Normal,
                         fontSize = settings.fontSizeSp.sp,
                         lineHeight = (settings.fontSizeSp * settings.lineHeightMultiplier).sp,
                         fontFamily = fontFamily,
                         textAlign = if (settings.isJustified) TextAlign.Justify else TextAlign.Start,
                         modifier = Modifier
                             .fillMaxWidth()
+                            .then(
+                                if (isSpeaking) Modifier
+                                    .background(
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                                else Modifier
+                            )
                             .padding(bottom = (settings.fontSizeSp * 0.7f).dp)
                     )
                 }
@@ -621,12 +677,20 @@ private fun ContinuousReflowView(
     fontFamily: FontFamily,
     viewModel: ReaderViewModel,
     currentPage: Int,
+    ttsState: TtsState,
     onToggleControls: () -> Unit
 ) {
     val listState = remember(bookId) {
         androidx.compose.foundation.lazy.LazyListState(
             firstVisibleItemIndex = currentPage.coerceIn(0, (totalPages - 1).coerceAtLeast(0))
         )
+    }
+
+    // Follow TTS page changes in continuous mode
+    LaunchedEffect(ttsState.currentPage) {
+        if ((ttsState.isPlaying || ttsState.isPaused) && ttsState.currentPage in 0 until totalPages) {
+            listState.animateScrollToItem(ttsState.currentPage)
+        }
     }
 
     // Automatically update current page and pre-load adjacent pages as the user scrolls
@@ -674,16 +738,30 @@ private fun ContinuousReflowView(
             }
 
             if (page != null && page.paragraphs.isNotEmpty()) {
-                for (paragraph in page.paragraphs) {
+                for ((pIndex, paragraph) in page.paragraphs.withIndex()) {
+                    val isSpeaking = (ttsState.isPlaying || ttsState.isPaused) &&
+                            ttsState.currentPage == pageIdx &&
+                            ttsState.currentParagraphIndex == pIndex
+
                     Text(
                         text = paragraph,
-                        color = textColor,
+                        color = if (isSpeaking) MaterialTheme.colorScheme.primary else textColor,
+                        fontWeight = if (isSpeaking) FontWeight.SemiBold else FontWeight.Normal,
                         fontSize = settings.fontSizeSp.sp,
                         lineHeight = (settings.fontSizeSp * settings.lineHeightMultiplier).sp,
                         fontFamily = fontFamily,
                         textAlign = if (settings.isJustified) TextAlign.Justify else TextAlign.Start,
                         modifier = Modifier
                             .fillMaxWidth()
+                            .then(
+                                if (isSpeaking) Modifier
+                                    .background(
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                                else Modifier
+                            )
                             .padding(bottom = (settings.fontSizeSp * 0.7f).dp)
                     )
                 }

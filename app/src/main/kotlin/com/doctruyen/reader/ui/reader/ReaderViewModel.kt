@@ -24,6 +24,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     private val bookRepository = BookRepository(application)
     private val settingsRepository = SettingsRepository(application)
+    val ttsManager = com.doctruyen.reader.tts.TtsManager(application, bookRepository)
+    val ttsState = ttsManager.state
 
     val settings: StateFlow<ReaderSettings> = settingsRepository.settings
 
@@ -47,6 +49,19 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     private val _outline = MutableStateFlow<List<Pair<String, Int>>>(emptyList())
     val outline: StateFlow<List<Pair<String, Int>>> = _outline.asStateFlow()
 
+    init {
+        // Automatically sync visual page position when TTS reads across pages
+        viewModelScope.launch {
+            ttsState.collect { tts ->
+                if (tts.isPlaying && tts.currentPage != _currentPage.value) {
+                    _currentPage.value = tts.currentPage
+                    loadPageContent(tts.currentPage)
+                    preloadAdjacentPages(tts.currentPage, tts.totalPages)
+                }
+            }
+        }
+    }
+
     fun loadBook(bookId: Long) {
         // If already loaded in this ViewModel, don't re-trigger anything
         if (_book.value?.id == bookId && _cachedPages.value.isNotEmpty()) {
@@ -54,6 +69,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         // Reset previous book state to prevent remembering/showing the wrong book!
+        ttsManager.stop()
         pageCache.clear()
         _cachedPages.value = emptyMap()
         _bookmarks.value = emptyList()
@@ -170,4 +186,29 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     fun setPadding(paddingDp: Int) = settingsRepository.updatePadding(paddingDp)
     fun setViewMode(viewMode: ViewMode) = settingsRepository.updateViewMode(viewMode)
     fun setContinuousScroll(isContinuous: Boolean) = settingsRepository.updateContinuousScroll(isContinuous)
+
+    // TTS actions
+    fun toggleTts() {
+        val current = _book.value ?: return
+        val tts = ttsState.value
+        if (tts.isPlaying) {
+            ttsManager.pause()
+        } else if (tts.isPaused && tts.bookId == current.id) {
+            ttsManager.resume()
+        } else {
+            ttsManager.startReading(current, _currentPage.value, 0)
+        }
+    }
+
+    fun pauseTts() = ttsManager.pause()
+    fun resumeTts() = ttsManager.resume()
+    fun stopTts() = ttsManager.stop()
+    fun nextTtsParagraph() = ttsManager.nextParagraph()
+    fun previousTtsParagraph() = ttsManager.previousParagraph()
+    fun setTtsSpeechRate(rate: Float) = ttsManager.setSpeechRate(rate)
+
+    override fun onCleared() {
+        super.onCleared()
+        ttsManager.destroy()
+    }
 }
