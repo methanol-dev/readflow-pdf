@@ -13,13 +13,14 @@ import com.doctruyen.reader.ui.reader.ReaderViewModel
 @Composable
 fun MainNavigation() {
     val backStack = rememberNavBackStack(LibraryNavKey)
+    val libraryViewModel: LibraryViewModel = viewModel()
+    val readerViewModel: ReaderViewModel = viewModel()
 
     NavDisplay(
         backStack = backStack,
         onBack = { backStack.removeLastOrNull() },
         entryProvider = entryProvider {
             entry<LibraryNavKey> {
-                val libraryViewModel: LibraryViewModel = viewModel()
                 LibraryScreen(
                     viewModel = libraryViewModel,
                     onOpenBook = { bookId ->
@@ -28,7 +29,6 @@ fun MainNavigation() {
                 )
             }
             entry<ReaderNavKey> { key ->
-                val readerViewModel: ReaderViewModel = viewModel()
                 ReaderScreen(
                     bookId = key.bookId,
                     viewModel = readerViewModel,

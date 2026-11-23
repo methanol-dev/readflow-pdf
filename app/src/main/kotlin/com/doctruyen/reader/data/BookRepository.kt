@@ -80,12 +80,41 @@ class BookRepository(private val context: Context) {
             book.coverPath?.let { File(it).delete() }
         } catch (ignored: Exception) {}
 
+        ramCache.keys.filter { it.startsWith("${book.id}_") }.forEach { ramCache.remove(it) }
         dbHelper.deleteBook(book.id)
         refreshBooks()
     }
 
-    suspend fun getPageContent(filePath: String, pageIndex: Int): PdfPageContent {
-        return PdfEngine.getPageContent(context, filePath, pageIndex)
+    suspend fun loadCachedPagesFromDb(bookId: Long): Map<Int, PdfPageContent> = withContext(Dispatchers.IO) {
+        val dbPages = dbHelper.getAllCachedPagesForBook(bookId)
+        dbPages.forEach { (pageIdx, content) ->
+            ramCache["${bookId}_$pageIdx"] = content
+        }
+        dbPages
+    }
+
+    suspend fun getPageContent(bookId: Long, filePath: String, pageIndex: Int): PdfPageContent = withContext(Dispatchers.IO) {
+        val cacheKey = "${bookId}_$pageIndex"
+
+        // 1. Check RAM Cache
+        ramCache[cacheKey]?.let { return@withContext it }
+
+        // 2. Check SQLite Persistent Cache
+        val fromDb = dbHelper.getCachedPageContent(bookId, pageIndex)
+        if (fromDb != null) {
+            ramCache[cacheKey] = fromDb
+            return@withContext fromDb
+        }
+
+        // 3. Fallback to PDF extraction and save to both caches
+        val parsed = PdfEngine.getPageContent(context, filePath, pageIndex)
+        ramCache[cacheKey] = parsed
+        dbHelper.cachePageContent(bookId, pageIndex, parsed)
+        parsed
+    }
+
+    companion object {
+        private val ramCache = java.util.concurrent.ConcurrentHashMap<String, PdfPageContent>()
     }
 
     suspend fun renderPageBitmap(filePath: String, pageIndex: Int, targetWidth: Int) =

@@ -11,7 +11,7 @@ class AppDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, n
 
     companion object {
         const val DATABASE_NAME = "doctruyen.db"
-        const val DATABASE_VERSION = 1
+        const val DATABASE_VERSION = 2
 
         const val TABLE_BOOKS = "books"
         const val COL_BOOK_ID = "id"
@@ -31,12 +31,18 @@ class AppDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, n
         const val COL_BM_PAGE_INDEX = "page_index"
         const val COL_BM_TITLE = "title"
         const val COL_BM_TIMESTAMP = "timestamp"
+
+        const val TABLE_PAGE_CACHE = "page_cache"
+        const val COL_PC_BOOK_ID = "book_id"
+        const val COL_PC_PAGE_INDEX = "page_index"
+        const val COL_PC_PARAGRAPHS = "paragraphs"
+        const val COL_PC_RAW_TEXT = "raw_text"
     }
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """
-            CREATE TABLE $TABLE_BOOKS (
+            CREATE TABLE IF NOT EXISTS $TABLE_BOOKS (
                 $COL_BOOK_ID INTEGER PRIMARY KEY AUTOINCREMENT,
                 $COL_BOOK_TITLE TEXT NOT NULL,
                 $COL_BOOK_URI TEXT NOT NULL,
@@ -53,7 +59,7 @@ class AppDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, n
 
         db.execSQL(
             """
-            CREATE TABLE $TABLE_BOOKMARKS (
+            CREATE TABLE IF NOT EXISTS $TABLE_BOOKMARKS (
                 $COL_BM_ID INTEGER PRIMARY KEY AUTOINCREMENT,
                 $COL_BM_BOOK_ID INTEGER NOT NULL,
                 $COL_BM_PAGE_INDEX INTEGER NOT NULL,
@@ -63,12 +69,34 @@ class AppDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, n
             )
             """.trimIndent()
         )
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS $TABLE_PAGE_CACHE (
+                $COL_PC_BOOK_ID INTEGER NOT NULL,
+                $COL_PC_PAGE_INDEX INTEGER NOT NULL,
+                $COL_PC_PARAGRAPHS TEXT NOT NULL,
+                $COL_PC_RAW_TEXT TEXT NOT NULL,
+                PRIMARY KEY ($COL_PC_BOOK_ID, $COL_PC_PAGE_INDEX)
+            )
+            """.trimIndent()
+        )
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS $TABLE_BOOKMARKS")
-        db.execSQL("DROP TABLE IF EXISTS $TABLE_BOOKS")
-        onCreate(db)
+        if (oldVersion < 2) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS $TABLE_PAGE_CACHE (
+                    $COL_PC_BOOK_ID INTEGER NOT NULL,
+                    $COL_PC_PAGE_INDEX INTEGER NOT NULL,
+                    $COL_PC_PARAGRAPHS TEXT NOT NULL,
+                    $COL_PC_RAW_TEXT TEXT NOT NULL,
+                    PRIMARY KEY ($COL_PC_BOOK_ID, $COL_PC_PAGE_INDEX)
+                )
+                """.trimIndent()
+            )
+        }
     }
 
     fun insertBook(book: Book): Long {
@@ -171,8 +199,75 @@ class AppDbHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, n
 
     fun deleteBook(id: Long) {
         val db = writableDatabase
+        db.delete(TABLE_PAGE_CACHE, "$COL_PC_BOOK_ID = ?", arrayOf(id.toString()))
         db.delete(TABLE_BOOKMARKS, "$COL_BM_BOOK_ID = ?", arrayOf(id.toString()))
         db.delete(TABLE_BOOKS, "$COL_BOOK_ID = ?", arrayOf(id.toString()))
+    }
+
+    fun cachePageContent(bookId: Long, pageIndex: Int, content: com.doctruyen.reader.data.model.PdfPageContent) {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put(COL_PC_BOOK_ID, bookId)
+            put(COL_PC_PAGE_INDEX, pageIndex)
+            put(COL_PC_PARAGRAPHS, content.paragraphs.joinToString("\u001E"))
+            put(COL_PC_RAW_TEXT, content.rawText)
+        }
+        db.insertWithOnConflict(TABLE_PAGE_CACHE, null, values, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    fun getCachedPageContent(bookId: Long, pageIndex: Int): com.doctruyen.reader.data.model.PdfPageContent? {
+        val db = readableDatabase
+        db.query(
+            TABLE_PAGE_CACHE,
+            null,
+            "$COL_PC_BOOK_ID = ? AND $COL_PC_PAGE_INDEX = ?",
+            arrayOf(bookId.toString(), pageIndex.toString()),
+            null,
+            null,
+            null
+        ).use { cursor ->
+            if (cursor.moveToFirst()) {
+                val paragraphsStr = cursor.getString(cursor.getColumnIndexOrThrow(COL_PC_PARAGRAPHS))
+                val rawText = cursor.getString(cursor.getColumnIndexOrThrow(COL_PC_RAW_TEXT))
+                val paragraphs = if (paragraphsStr.isEmpty()) emptyList() else paragraphsStr.split("\u001E")
+                return com.doctruyen.reader.data.model.PdfPageContent(
+                    pageIndex = pageIndex,
+                    paragraphs = paragraphs,
+                    rawText = rawText
+                )
+            }
+        }
+        return null
+    }
+
+    fun getAllCachedPagesForBook(bookId: Long): Map<Int, com.doctruyen.reader.data.model.PdfPageContent> {
+        val map = mutableMapOf<Int, com.doctruyen.reader.data.model.PdfPageContent>()
+        val db = readableDatabase
+        db.query(
+            TABLE_PAGE_CACHE,
+            null,
+            "$COL_PC_BOOK_ID = ?",
+            arrayOf(bookId.toString()),
+            null,
+            null,
+            null
+        ).use { cursor ->
+            val pageIdxCol = cursor.getColumnIndexOrThrow(COL_PC_PAGE_INDEX)
+            val paragraphsCol = cursor.getColumnIndexOrThrow(COL_PC_PARAGRAPHS)
+            val rawTextCol = cursor.getColumnIndexOrThrow(COL_PC_RAW_TEXT)
+            while (cursor.moveToNext()) {
+                val pageIndex = cursor.getInt(pageIdxCol)
+                val paragraphsStr = cursor.getString(paragraphsCol)
+                val rawText = cursor.getString(rawTextCol)
+                val paragraphs = if (paragraphsStr.isEmpty()) emptyList() else paragraphsStr.split("\u001E")
+                map[pageIndex] = com.doctruyen.reader.data.model.PdfPageContent(
+                    pageIndex = pageIndex,
+                    paragraphs = paragraphs,
+                    rawText = rawText
+                )
+            }
+        }
+        return map
     }
 
     fun addBookmark(bookmark: Bookmark): Long {

@@ -23,12 +23,41 @@ import java.io.FileOutputStream
 object PdfEngine {
 
     private var isInitialized = false
+    private var activeFilePath: String? = null
+    private var activeDoc: PDDocument? = null
 
     fun init(context: Context) {
         if (!isInitialized) {
             PDFBoxResourceLoader.init(context.applicationContext)
             isInitialized = true
         }
+    }
+
+    @Synchronized
+    private fun getOrLoadDocument(file: File): PDDocument? {
+        if (activeFilePath == file.absolutePath && activeDoc != null) {
+            return activeDoc
+        }
+        try {
+            activeDoc?.close()
+        } catch (ignored: Exception) {}
+
+        return try {
+            val doc = PDDocument.load(file)
+            activeFilePath = file.absolutePath
+            activeDoc = doc
+            doc
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun closeActiveDocument() {
+        try {
+            activeDoc?.close()
+        } catch (ignored: Exception) {}
+        activeDoc = null
+        activeFilePath = null
     }
 
     data class ImportedPdfResult(
@@ -147,23 +176,28 @@ object PdfEngine {
             }
 
             try {
-                PDDocument.load(file).use { doc ->
-                    if (pageIndex < 0 || pageIndex >= doc.numberOfPages) {
-                        return@withContext PdfPageContent(pageIndex, emptyList(), "")
-                    }
-
-                    val stripper = PDFTextStripper()
-                    stripper.startPage = pageIndex + 1
-                    stripper.endPage = pageIndex + 1
-                    val rawText = stripper.getText(doc) ?: ""
-                    val paragraphs = TextNormalizer.normalize(rawText)
-
-                    PdfPageContent(
+                val doc = getOrLoadDocument(file)
+                    ?: return@withContext PdfPageContent(
                         pageIndex = pageIndex,
-                        paragraphs = paragraphs,
-                        rawText = rawText
+                        paragraphs = listOf("Không thể mở tài liệu PDF."),
+                        rawText = ""
                     )
+
+                if (pageIndex < 0 || pageIndex >= doc.numberOfPages) {
+                    return@withContext PdfPageContent(pageIndex, emptyList(), "")
                 }
+
+                val stripper = PDFTextStripper()
+                stripper.startPage = pageIndex + 1
+                stripper.endPage = pageIndex + 1
+                val rawText = stripper.getText(doc) ?: ""
+                val paragraphs = TextNormalizer.normalize(rawText)
+
+                PdfPageContent(
+                    pageIndex = pageIndex,
+                    paragraphs = paragraphs,
+                    rawText = rawText
+                )
             } catch (e: Exception) {
                 PdfPageContent(
                     pageIndex = pageIndex,

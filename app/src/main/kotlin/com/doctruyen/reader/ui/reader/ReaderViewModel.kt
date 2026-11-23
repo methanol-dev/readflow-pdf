@@ -48,16 +48,33 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     val outline: StateFlow<List<Pair<String, Int>>> = _outline.asStateFlow()
 
     fun loadBook(bookId: Long) {
+        // If already loaded in this ViewModel, don't re-trigger anything
+        if (_book.value?.id == bookId && _cachedPages.value.isNotEmpty()) {
+            return
+        }
+
         viewModelScope.launch {
             val loaded = bookRepository.getBook(bookId)
             _book.value = loaded
             if (loaded != null) {
                 _currentPage.value = loaded.lastReadPage
-                loadPageContent(loaded.lastReadPage)
-                // Preload adjacent pages
+
+                // 1. Immediately load all cached pages from DB/RAM (instant!)
+                val cached = bookRepository.loadCachedPagesFromDb(bookId)
+                if (cached.isNotEmpty()) {
+                    pageCache.putAll(cached)
+                    _cachedPages.value = pageCache.toMap()
+                }
+
+                // 2. Only show loading spinner if current page is truly not yet extracted
+                if (!pageCache.containsKey(loaded.lastReadPage)) {
+                    loadPageContent(loaded.lastReadPage)
+                }
+
+                // Preload adjacent pages in background
                 preloadAdjacentPages(loaded.lastReadPage, loaded.pageCount)
 
-                // Load bookmarks & outline
+                // Load bookmarks & outline in background
                 _bookmarks.value = bookRepository.getBookmarks(bookId)
                 _outline.value = bookRepository.getOutline(loaded.filePath)
             }
@@ -85,13 +102,17 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
         if (pageCache.containsKey(pageIndex)) return
 
         viewModelScope.launch {
-            _isLoadingPage.value = true
+            if (_currentPage.value == pageIndex) {
+                _isLoadingPage.value = true
+            }
             try {
-                val content = bookRepository.getPageContent(currentBook.filePath, pageIndex)
+                val content = bookRepository.getPageContent(currentBook.id, currentBook.filePath, pageIndex)
                 pageCache[pageIndex] = content
                 _cachedPages.value = pageCache.toMap()
             } finally {
-                _isLoadingPage.value = false
+                if (_currentPage.value == pageIndex) {
+                    _isLoadingPage.value = false
+                }
             }
         }
     }
@@ -102,7 +123,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             val indicesToPreload = listOf(centerIndex - 1, centerIndex + 1, centerIndex + 2)
             for (idx in indicesToPreload) {
                 if (idx in 0 until totalPages && !pageCache.containsKey(idx)) {
-                    val content = bookRepository.getPageContent(currentBook.filePath, idx)
+                    val content = bookRepository.getPageContent(currentBook.id, currentBook.filePath, idx)
                     pageCache[idx] = content
                 }
             }

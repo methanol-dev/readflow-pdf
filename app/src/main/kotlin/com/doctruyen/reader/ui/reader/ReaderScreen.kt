@@ -265,17 +265,19 @@ fun ReaderScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding() // FIX: Pushes controls above 3 Android system navigation buttons!
-                        .padding(horizontal = 20.dp, vertical = 12.dp)
+                        .padding(horizontal = 20.dp, vertical = 10.dp)
                 ) {
-                    // Page scrubber slider
+                    // Page progress info (Clean & compact, no slider)
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
                             text = "Trang ${currentPage + 1} / $totalPages",
-                            fontWeight = FontWeight.Bold,
+                            fontWeight = FontWeight.SemiBold,
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.primary
                         )
@@ -284,18 +286,6 @@ fun ReaderScreen(
                             text = "$progressPercent%",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    if (totalPages > 1) {
-                        Slider(
-                            value = currentPage.toFloat(),
-                            onValueChange = {
-                                viewModel.onPageChanged(it.toInt())
-                            },
-                            valueRange = 0f..(totalPages - 1).toFloat(),
-                            steps = (totalPages - 2).coerceAtLeast(0),
-                            modifier = Modifier.fillMaxWidth()
                         )
                     }
 
