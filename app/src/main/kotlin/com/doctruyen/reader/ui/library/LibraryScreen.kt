@@ -141,7 +141,7 @@ fun LibraryScreen(
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
-                                "Đọc Truyện PDF",
+                                "ReadFlow PDF",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 20.sp
                             )
