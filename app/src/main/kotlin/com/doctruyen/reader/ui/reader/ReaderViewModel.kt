@@ -53,31 +53,36 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
 
+        // Reset previous book state to prevent remembering/showing the wrong book!
+        pageCache.clear()
+        _cachedPages.value = emptyMap()
+        _bookmarks.value = emptyList()
+        _outline.value = emptyList()
+        _isLoadingPage.value = false
+
         viewModelScope.launch {
-            val loaded = bookRepository.getBook(bookId)
+            val loaded = bookRepository.getBook(bookId) ?: return@launch
             _book.value = loaded
-            if (loaded != null) {
-                _currentPage.value = loaded.lastReadPage
+            _currentPage.value = loaded.lastReadPage
 
-                // 1. Immediately load all cached pages from DB/RAM (instant!)
-                val cached = bookRepository.loadCachedPagesFromDb(bookId)
-                if (cached.isNotEmpty()) {
-                    pageCache.putAll(cached)
-                    _cachedPages.value = pageCache.toMap()
-                }
-
-                // 2. Only show loading spinner if current page is truly not yet extracted
-                if (!pageCache.containsKey(loaded.lastReadPage)) {
-                    loadPageContent(loaded.lastReadPage)
-                }
-
-                // Preload adjacent pages in background
-                preloadAdjacentPages(loaded.lastReadPage, loaded.pageCount)
-
-                // Load bookmarks & outline in background
-                _bookmarks.value = bookRepository.getBookmarks(bookId)
-                _outline.value = bookRepository.getOutline(loaded.filePath)
+            // 1. Immediately load all cached pages from DB/RAM specifically for THIS book
+            val cached = bookRepository.loadCachedPagesFromDb(bookId)
+            if (cached.isNotEmpty()) {
+                pageCache.putAll(cached)
+                _cachedPages.value = pageCache.toMap()
             }
+
+            // 2. Only show loading spinner if current page is truly not yet extracted
+            if (!pageCache.containsKey(loaded.lastReadPage)) {
+                loadPageContent(loaded.lastReadPage)
+            }
+
+            // Preload adjacent pages in background
+            preloadAdjacentPages(loaded.lastReadPage, loaded.pageCount)
+
+            // Load bookmarks & outline in background
+            _bookmarks.value = bookRepository.getBookmarks(bookId)
+            _outline.value = bookRepository.getOutline(loaded.filePath)
         }
     }
 

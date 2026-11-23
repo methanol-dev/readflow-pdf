@@ -134,29 +134,48 @@ fun ReaderScreen(
     ) {
         // Main reading content area
         Box(modifier = Modifier.fillMaxSize()) {
-            if (settings.viewMode == ViewMode.REFLOW) {
-                if (settings.isContinuousScroll) {
-                    // Continuous Vertical Scroll Mode
-                    ContinuousReflowView(
-                        totalPages = totalPages,
-                        cachedPages = cachedPages,
-                        settings = settings,
-                        textColor = activeTextColor,
-                        fontFamily = activeFontFamily,
-                        viewModel = viewModel,
-                        currentPage = currentPage,
-                        onToggleControls = { controlsVisible = !controlsVisible }
-                    )
+            androidx.compose.runtime.key(bookId) {
+                if (settings.viewMode == ViewMode.REFLOW) {
+                    if (settings.isContinuousScroll) {
+                        // Continuous Vertical Scroll Mode
+                        ContinuousReflowView(
+                            bookId = bookId,
+                            totalPages = totalPages,
+                            cachedPages = cachedPages,
+                            settings = settings,
+                            textColor = activeTextColor,
+                            fontFamily = activeFontFamily,
+                            viewModel = viewModel,
+                            currentPage = currentPage,
+                            onToggleControls = { controlsVisible = !controlsVisible }
+                        )
+                    } else {
+                        // Page by Page with Swipe & Tap Gesture Navigation
+                        SinglePageReflowView(
+                            bookId = bookId,
+                            pageContent = cachedPages[currentPage],
+                            currentPage = currentPage,
+                            totalPages = totalPages,
+                            settings = settings,
+                            textColor = activeTextColor,
+                            fontFamily = activeFontFamily,
+                            isLoading = isLoadingPage,
+                            onPrevPage = {
+                                if (currentPage > 0) viewModel.onPageChanged(currentPage - 1)
+                            },
+                            onNextPage = {
+                                if (currentPage < totalPages - 1) viewModel.onPageChanged(currentPage + 1)
+                            },
+                            onToggleControls = { controlsVisible = !controlsVisible }
+                        )
+                    }
                 } else {
-                    // Page by Page with Swipe & Tap Gesture Navigation
-                    SinglePageReflowView(
-                        pageContent = cachedPages[currentPage],
+                    // Original Page View (Bitmaps)
+                    OriginalPageView(
+                        filePath = book?.filePath,
                         currentPage = currentPage,
                         totalPages = totalPages,
-                        settings = settings,
-                        textColor = activeTextColor,
-                        fontFamily = activeFontFamily,
-                        isLoading = isLoadingPage,
+                        viewModel = viewModel,
                         onPrevPage = {
                             if (currentPage > 0) viewModel.onPageChanged(currentPage - 1)
                         },
@@ -166,21 +185,6 @@ fun ReaderScreen(
                         onToggleControls = { controlsVisible = !controlsVisible }
                     )
                 }
-            } else {
-                // Original Page View (Bitmaps)
-                OriginalPageView(
-                    filePath = book?.filePath,
-                    currentPage = currentPage,
-                    totalPages = totalPages,
-                    viewModel = viewModel,
-                    onPrevPage = {
-                        if (currentPage > 0) viewModel.onPageChanged(currentPage - 1)
-                    },
-                    onNextPage = {
-                        if (currentPage < totalPages - 1) viewModel.onPageChanged(currentPage + 1)
-                    },
-                    onToggleControls = { controlsVisible = !controlsVisible }
-                )
             }
         }
 
@@ -380,6 +384,7 @@ fun ReaderScreen(
  */
 @Composable
 private fun SinglePageReflowView(
+    bookId: Long,
     pageContent: PdfPageContent?,
     currentPage: Int,
     totalPages: Int,
@@ -391,11 +396,11 @@ private fun SinglePageReflowView(
     onNextPage: () -> Unit,
     onToggleControls: () -> Unit
 ) {
-    val listState = rememberLazyListState()
+    val listState = remember(bookId, currentPage) { androidx.compose.foundation.lazy.LazyListState() }
     var dragDistanceX by remember { mutableFloatStateOf(0f) }
 
     // Reset scroll when page changes
-    LaunchedEffect(currentPage) {
+    LaunchedEffect(bookId, currentPage) {
         listState.scrollToItem(0)
     }
 
@@ -608,6 +613,7 @@ private fun SinglePageReflowView(
  */
 @Composable
 private fun ContinuousReflowView(
+    bookId: Long,
     totalPages: Int,
     cachedPages: Map<Int, PdfPageContent>,
     settings: ReaderSettings,
@@ -617,10 +623,14 @@ private fun ContinuousReflowView(
     currentPage: Int,
     onToggleControls: () -> Unit
 ) {
-    val listState = rememberLazyListState(initialFirstVisibleItemIndex = currentPage)
+    val listState = remember(bookId) {
+        androidx.compose.foundation.lazy.LazyListState(
+            firstVisibleItemIndex = currentPage.coerceIn(0, (totalPages - 1).coerceAtLeast(0))
+        )
+    }
 
     // Automatically update current page and pre-load adjacent pages as the user scrolls
-    LaunchedEffect(listState) {
+    LaunchedEffect(listState, bookId) {
         snapshotFlow { listState.firstVisibleItemIndex }
             .distinctUntilChanged()
             .collect { visibleIndex ->
@@ -635,6 +645,7 @@ private fun ContinuousReflowView(
 
     LazyColumn(
         state = listState,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 76.dp, bottom = 140.dp),
         modifier = Modifier
             .fillMaxSize()
             .pointerInput(Unit) {
@@ -642,10 +653,6 @@ private fun ContinuousReflowView(
             }
             .padding(horizontal = settings.horizontalPaddingDp.dp)
     ) {
-        item {
-            Spacer(modifier = Modifier.height(76.dp))
-        }
-
         items(totalPages) { pageIdx ->
             val page = cachedPages[pageIdx]
 

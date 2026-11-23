@@ -29,13 +29,15 @@ fun MainNavigation() {
                 )
             }
             entry<ReaderNavKey> { key ->
-                ReaderScreen(
-                    bookId = key.bookId,
-                    viewModel = readerViewModel,
-                    onBack = {
-                        backStack.removeLastOrNull()
-                    }
-                )
+                androidx.compose.runtime.key(key.bookId) {
+                    ReaderScreen(
+                        bookId = key.bookId,
+                        viewModel = readerViewModel,
+                        onBack = {
+                            backStack.removeLastOrNull()
+                        }
+                    )
+                }
             }
         }
     )
