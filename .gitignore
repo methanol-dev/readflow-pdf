@@ -47,7 +47,6 @@ app.*.map.json
 local.properties
 .gradle/
 .kotlin/
-app/
 
 # Widget Preview related
 .widget_preview/
