@@ -22,9 +22,18 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _createDB,
+      onUpgrade: _upgradeDB,
     );
+  }
+
+  Future _upgradeDB(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      // Text extraction changed (spacing and paragraphs now follow the page
+      // layout), so pages cached by the old extractor are stale.
+      await db.delete('page_cache');
+    }
   }
 
   Future _createDB(Database db, int version) async {
@@ -112,9 +121,12 @@ class DatabaseHelper {
 
   Future<int> deleteBook(int id) async {
     final db = await instance.database;
-    await db.delete('page_cache', where: 'book_id = ?', whereArgs: [id]);
-    await db.delete('bookmarks', where: 'book_id = ?', whereArgs: [id]);
-    return await db.delete('books', where: 'id = ?', whereArgs: [id]);
+    // Foreign keys are not enforced, so child rows are removed explicitly.
+    return db.transaction((txn) async {
+      await txn.delete('page_cache', where: 'book_id = ?', whereArgs: [id]);
+      await txn.delete('bookmarks', where: 'book_id = ?', whereArgs: [id]);
+      return txn.delete('books', where: 'id = ?', whereArgs: [id]);
+    });
   }
 
   // --- Bookmarks ---
@@ -153,18 +165,15 @@ class DatabaseHelper {
     );
   }
 
-  Future<Map<int, String>> getAllCachedPages(int bookId) async {
+  Future<String?> getCachedPage(int bookId, int pageIndex) async {
     final db = await instance.database;
     final result = await db.query(
       'page_cache',
-      columns: ['page_index', 'content'],
-      where: 'book_id = ?',
-      whereArgs: [bookId],
+      columns: ['content'],
+      where: 'book_id = ? AND page_index = ?',
+      whereArgs: [bookId, pageIndex],
+      limit: 1,
     );
-    final map = <int, String>{};
-    for (final row in result) {
-      map[row['page_index'] as int] = row['content'] as String;
-    }
-    return map;
+    return result.isEmpty ? null : result.first['content'] as String;
   }
 }

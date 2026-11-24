@@ -23,8 +23,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _loadBooks();
   }
 
+  // The spinner is only shown for the first load; later refreshes swap the
+  // list in place.
   Future<void> _loadBooks() async {
-    setState(() => _isLoading = true);
     final books = await DatabaseHelper.instance.getBooks();
     if (mounted) {
       setState(() {
@@ -92,6 +93,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   void _openReader(Book book) async {
+    if (!mounted) return;
     await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => ReaderScreen(book: book)),

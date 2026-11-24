@@ -1,16 +1,26 @@
 import 'package:flutter/material.dart';
 
+// Persisted by index: append new values at the end, never reorder.
 enum FontFamilyType { system, serif, sansSerif, monospace }
 
+// Persisted by index: append new values at the end, never reorder.
 enum ViewMode { reflow, originalPage }
 
+// Persisted by index: append new values at the end, never reorder.
 enum ReaderThemePreset {
-  classicWhite,
-  sepia,
-  darkNight,
-  amoledBlack,
-  forestGreen,
-  custom,
+  classicWhite(background: Color(0xFFFFFFFF), text: Color(0xFF212121)),
+  sepia(background: Color(0xFFFBF0D9), text: Color(0xFF5F4B32)),
+  darkNight(background: Color(0xFF1E1E1E), text: Color(0xFFD6D6D6)),
+  amoledBlack(background: Color(0xFF000000), text: Color(0xFFCCCCCC)),
+  forestGreen(background: Color(0xFFE8F5E9), text: Color(0xFF1B5E20)),
+  custom;
+
+  const ReaderThemePreset({this.background, this.text});
+
+  /// Fixed colors of the preset; null for [custom], which uses the colors
+  /// stored in [ReaderSettings].
+  final Color? background;
+  final Color? text;
 }
 
 class ReaderSettings {
@@ -38,39 +48,9 @@ class ReaderSettings {
     this.customTextColorHex = 0xFF5F4B32,
   });
 
-  Color get backgroundColor {
-    switch (themePreset) {
-      case ReaderThemePreset.classicWhite:
-        return const Color(0xFFFFFFFF);
-      case ReaderThemePreset.sepia:
-        return const Color(0xFFFBF0D9);
-      case ReaderThemePreset.darkNight:
-        return const Color(0xFF1E1E1E);
-      case ReaderThemePreset.amoledBlack:
-        return const Color(0xFF000000);
-      case ReaderThemePreset.forestGreen:
-        return const Color(0xFFE8F5E9);
-      case ReaderThemePreset.custom:
-        return Color(customBgColorHex);
-    }
-  }
+  Color get backgroundColor => themePreset.background ?? Color(customBgColorHex);
 
-  Color get textColor {
-    switch (themePreset) {
-      case ReaderThemePreset.classicWhite:
-        return const Color(0xFF212121);
-      case ReaderThemePreset.sepia:
-        return const Color(0xFF5F4B32);
-      case ReaderThemePreset.darkNight:
-        return const Color(0xFFD6D6D6);
-      case ReaderThemePreset.amoledBlack:
-        return const Color(0xFFCCCCCC);
-      case ReaderThemePreset.forestGreen:
-        return const Color(0xFF1B5E20);
-      case ReaderThemePreset.custom:
-        return Color(customTextColorHex);
-    }
-  }
+  Color get textColor => themePreset.text ?? Color(customTextColorHex);
 
   String? get fontFamilyName {
     switch (fontFamily) {

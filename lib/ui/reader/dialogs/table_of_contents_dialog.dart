@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import '../../../models/bookmark.dart';
+import '../../../models/outline_item.dart';
 
 class TableOfContentsDialog extends StatelessWidget {
-  final List<Map<String, dynamic>> outline;
+  final List<OutlineItem> outline;
   final List<Bookmark> bookmarks;
   final int currentPage;
   final int totalPages;
@@ -53,8 +54,8 @@ class TableOfContentsDialog extends StatelessWidget {
                             separatorBuilder: (_, _) => const Divider(height: 1),
                             itemBuilder: (context, index) {
                               final item = outline[index];
-                              final title = item['title'] as String;
-                              final pageIdx = item['pageIndex'] as int;
+                              final title = item.title;
+                              final pageIdx = item.pageIndex;
                               final isCurrent = pageIdx == currentPage;
 
                               return ListTile(

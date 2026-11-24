@@ -1,47 +1,82 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
+import '../models/outline_item.dart';
 import '../models/pdf_page_content.dart';
 import 'database_helper.dart';
+import 'pdf_page_extractor.dart';
 
 class PdfService {
   static final PdfService instance = PdfService._init();
   PdfService._init();
 
-  // In-memory cache for fast instant rendering
-  final Map<String, Map<int, PdfPageContent>> _memoryCache = {};
+  // Extracted pages per book id, for instant re-rendering.
+  final Map<int, Map<int, PdfPageContent>> _memoryCache = {};
+
+  // Page loads in flight, so the reader and TTS asking for the same page
+  // share one extraction.
+  final Map<(int, int), Future<PdfPageContent>> _pendingLoads = {};
+
+  // The most recently opened document. Parsing a PDF is the expensive part,
+  // so it is kept open and reused across page count, outline and text calls.
+  String? _openPath;
+  Future<PdfDocument>? _openDocument;
 
   void clearMemoryCache() {
     _memoryCache.clear();
   }
 
-  Future<int> getPageCount(String filePath) async {
-    final bytes = await File(filePath).readAsBytes();
-    final document = PdfDocument(inputBytes: bytes);
-    final count = document.pages.count;
-    document.dispose();
-    return count;
+  Future<PdfDocument> _document(String filePath) {
+    final cached = _openDocument;
+    if (cached != null && _openPath == filePath) return cached;
+
+    releaseDocument();
+    final opening = File(filePath)
+        .readAsBytes()
+        .then((bytes) => PdfDocument(inputBytes: bytes));
+    _openPath = filePath;
+    _openDocument = opening;
+    // Do not keep a failed open around, so the next call retries.
+    opening.then<void>((_) {}, onError: (Object _) {
+      if (identical(_openDocument, opening)) {
+        _openPath = null;
+        _openDocument = null;
+      }
+    });
+    return opening;
   }
 
-  Future<List<Map<String, dynamic>>> getOutline(String filePath) async {
-    final outlineList = <Map<String, dynamic>>[];
+  /// Closes the document kept open by previous calls and frees its memory.
+  void releaseDocument() {
+    final open = _openDocument;
+    _openPath = null;
+    _openDocument = null;
+    open?.then<void>((document) => document.dispose(), onError: (Object _) {});
+  }
+
+  Future<int> getPageCount(String filePath) async {
+    final document = await _document(filePath);
+    return document.pages.count;
+  }
+
+  Future<List<OutlineItem>> getOutline(String filePath) async {
+    final outline = <OutlineItem>[];
     try {
-      final bytes = await File(filePath).readAsBytes();
-      final document = PdfDocument(inputBytes: bytes);
+      final document = await _document(filePath);
+      final lastPage = document.pages.count - 1;
       for (int i = 0; i < document.bookmarks.count; i++) {
-        final bm = document.bookmarks[i];
-        int pageIndex = 0;
-        if (bm.destination != null) {
-          pageIndex = document.pages.indexOf(bm.destination!.page);
-        }
-        outlineList.add({
-          'title': bm.title,
-          'pageIndex': pageIndex.clamp(0, document.pages.count - 1),
-        });
+        final bookmark = document.bookmarks[i];
+        final destination = bookmark.destination;
+        final pageIndex =
+            destination == null ? 0 : document.pages.indexOf(destination.page);
+        outline.add(OutlineItem(
+          title: bookmark.title,
+          pageIndex: pageIndex.clamp(0, lastPage),
+        ));
       }
-      document.dispose();
     } catch (_) {}
-    return outlineList;
+    return outline;
   }
 
   Future<PdfPageContent> loadPageContent({
@@ -49,100 +84,71 @@ class PdfService {
     required String filePath,
     required int pageIndex,
     required int totalPages,
+  }) {
+    // 1. RAM cache
+    final cached = _memoryCache[bookId]?[pageIndex];
+    if (cached != null) return Future.value(cached);
+
+    final key = (bookId, pageIndex);
+    return _pendingLoads[key] ??= _loadUncached(
+      bookId: bookId,
+      filePath: filePath,
+      pageIndex: pageIndex,
+      totalPages: totalPages,
+    ).whenComplete(() => _pendingLoads.remove(key));
+  }
+
+  Future<PdfPageContent> _loadUncached({
+    required int bookId,
+    required String filePath,
+    required int pageIndex,
+    required int totalPages,
   }) async {
-    final cacheKey = '$bookId';
-    _memoryCache[cacheKey] ??= {};
+    // 2. Database cache
+    var paragraphs = await _readCachedParagraphs(bookId, pageIndex);
 
-    // 1. Check RAM cache
-    if (_memoryCache[cacheKey]!.containsKey(pageIndex)) {
-      return _memoryCache[cacheKey]![pageIndex]!;
-    }
-
-    // 2. Check Database cache
-    final dbPages = await DatabaseHelper.instance.getAllCachedPages(bookId);
-    if (dbPages.containsKey(pageIndex)) {
-      final raw = dbPages[pageIndex]!;
-      try {
-        final decoded = List<String>.from(jsonDecode(raw) as List);
-        final content = PdfPageContent(pageIndex: pageIndex, paragraphs: decoded);
-        _memoryCache[cacheKey]![pageIndex] = content;
-        return content;
-      } catch (_) {}
-    }
-
-    // 3. Extract text from PDF via Syncfusion
-    final paragraphs = await _extractAndNormalize(filePath, pageIndex, totalPages);
-    final content = PdfPageContent(pageIndex: pageIndex, paragraphs: paragraphs);
-
-    _memoryCache[cacheKey]![pageIndex] = content;
-
-    // Save to Database cache asynchronously
-    DatabaseHelper.instance.cachePage(bookId, pageIndex, jsonEncode(paragraphs));
-
-    return content;
-  }
-
-  Future<List<String>> _extractAndNormalize(String filePath, int pageIndex, int totalPages) async {
-    if (pageIndex < 0 || pageIndex >= totalPages) return [];
-    try {
-      final bytes = await File(filePath).readAsBytes();
-      final document = PdfDocument(inputBytes: bytes);
-      final textExtractor = PdfTextExtractor(document);
-      final rawText = textExtractor.extractText(
-        startPageIndex: pageIndex,
-        endPageIndex: pageIndex,
-      );
-      document.dispose();
-
-      return _normalizeText(rawText);
-    } catch (e) {
-      return ['Không thể đọc nội dung trang này.'];
-    }
-  }
-
-  List<String> _normalizeText(String rawText) {
-    if (rawText.trim().isEmpty) return [];
-
-    // Replace Windows newlines
-    String text = rawText.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
-
-    // Remove hyphenation at line breaks: e.g. "xinh đẹ-\np" -> "xinh đẹ-p" or "đan-\ng" -> "đang"
-    text = text.replaceAllMapped(RegExp(r'(\w+)-\n(\w+)'), (m) => '${m[1]}${m[2]}');
-
-    // Split paragraphs by double line breaks or single lines that look like paragraphs
-    final lines = text.split('\n');
-    final paragraphs = <String>[];
-    StringBuffer currentPara = StringBuffer();
-
-    for (var line in lines) {
-      final trimmed = line.trim();
-      if (trimmed.isEmpty) {
-        if (currentPara.isNotEmpty) {
-          paragraphs.add(currentPara.toString().trim());
-          currentPara.clear();
-        }
-      } else {
-        if (currentPara.isNotEmpty) {
-          // If previous ended with punctuation or line starts with indent/bullet/dialogue
-          if (trimmed.startsWith('-') ||
-              trimmed.startsWith('—') ||
-              trimmed.startsWith('•') ||
-              trimmed.startsWith('"') ||
-              trimmed.startsWith('“')) {
-            paragraphs.add(currentPara.toString().trim());
-            currentPara.clear();
-          } else {
-            currentPara.write(' ');
-          }
-        }
-        currentPara.write(trimmed);
+    // 3. Extract text from the PDF
+    if (paragraphs == null) {
+      paragraphs = await _extractParagraphs(filePath, pageIndex, totalPages);
+      if (paragraphs != null) {
+        unawaited(
+          DatabaseHelper.instance
+              .cachePage(bookId, pageIndex, jsonEncode(paragraphs))
+              .catchError((Object _) {}),
+        );
       }
     }
 
-    if (currentPara.isNotEmpty) {
-      paragraphs.add(currentPara.toString().trim());
-    }
+    final content = PdfPageContent(
+      pageIndex: pageIndex,
+      paragraphs: paragraphs ?? const ['Không thể đọc nội dung trang này.'],
+    );
+    (_memoryCache[bookId] ??= {})[pageIndex] = content;
+    return content;
+  }
 
-    return paragraphs.where((p) => p.trim().isNotEmpty).toList();
+  Future<List<String>?> _readCachedParagraphs(int bookId, int pageIndex) async {
+    final raw = await DatabaseHelper.instance.getCachedPage(bookId, pageIndex);
+    if (raw == null) return null;
+    try {
+      return List<String>.from(jsonDecode(raw) as List);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Returns null when the page could not be read.
+  Future<List<String>?> _extractParagraphs(
+    String filePath,
+    int pageIndex,
+    int totalPages,
+  ) async {
+    if (pageIndex < 0 || pageIndex >= totalPages) return const [];
+    try {
+      final document = await _document(filePath);
+      return extractPageParagraphs(document, pageIndex);
+    } catch (_) {
+      return null;
+    }
   }
 }

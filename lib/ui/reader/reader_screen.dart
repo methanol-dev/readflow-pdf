@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:pdfx/pdfx.dart' as px;
 import '../../models/book.dart';
 import '../../models/bookmark.dart';
+import '../../models/outline_item.dart';
 import '../../models/pdf_page_content.dart';
 import '../../models/reader_settings.dart';
 import '../../services/database_helper.dart';
@@ -10,8 +10,10 @@ import '../../services/settings_service.dart';
 import '../../services/tts_service.dart';
 import '../common/tts_player_bar.dart';
 import 'dialogs/table_of_contents_dialog.dart';
-import 'sheets/theme_sheet.dart';
-import 'sheets/typography_sheet.dart';
+import 'widgets/original_pdf_view.dart';
+import 'widgets/reader_bottom_bar.dart';
+import 'widgets/reader_paragraph.dart';
+import 'widgets/reader_top_bar.dart';
 
 class ReaderScreen extends StatefulWidget {
   final Book book;
@@ -23,128 +25,118 @@ class ReaderScreen extends StatefulWidget {
 }
 
 class _ReaderScreenState extends State<ReaderScreen> {
+  static const _controlsAnimation = Duration(milliseconds: 200);
+
   late int _currentPage;
   bool _controlsVisible = true;
-  bool _isLoadingPage = false;
   final Map<int, PdfPageContent> _pages = {};
+  final Set<int> _loadingPages = {};
   List<Bookmark> _bookmarks = [];
-  List<Map<String, dynamic>> _outline = [];
+  List<OutlineItem> _outline = [];
 
-  // Scroll controllers for auto-scrolling to active TTS paragraph
   final ScrollController _singlePageScrollController = ScrollController();
-  final ScrollController _continuousScrollController = ScrollController();
-  px.PdfControllerPinch? _pdfxController;
+
+  int get _bookId => widget.book.id ?? 0;
+  int get _pageCount => widget.book.pageCount;
 
   @override
   void initState() {
     super.initState();
-    _currentPage = widget.book.lastReadPage.clamp(0, widget.book.pageCount - 1);
-    _loadInitialData();
+    _currentPage = widget.book.lastReadPage.clamp(0, _pageCount - 1);
+    _loadPage(_currentPage);
+    _loadPage(_currentPage + 1);
+    _loadBookmarksAndOutline();
 
-    // Listen to TTS updates to sync visual page & scroll to speaking paragraph
+    // Follow the page TTS is reading.
     TtsService.instance.state.addListener(_onTtsStateChanged);
-  }
-
-  void _onTtsStateChanged() {
-    final tts = TtsService.instance.state.value;
-    if (tts.isPlaying && tts.bookId == widget.book.id && tts.currentPage != _currentPage) {
-      _changePage(tts.currentPage);
-    }
   }
 
   @override
   void dispose() {
-    TtsService.instance.state.removeListener(_onTtsStateChanged);
+    final tts = TtsService.instance;
+    tts.state.removeListener(_onTtsStateChanged);
+    // The player controls only exist on this screen, so playback ends with it.
+    if (tts.state.value.isActive && tts.state.value.bookId == widget.book.id) {
+      tts.stop();
+    }
+    PdfService.instance.releaseDocument();
     _singlePageScrollController.dispose();
-    _continuousScrollController.dispose();
-    _pdfxController?.dispose();
     super.dispose();
   }
 
-  Future<void> _loadInitialData() async {
-    // 1. Load bookmarks & outline
-    _bookmarks = await DatabaseHelper.instance.getBookmarks(widget.book.id ?? 0);
-    _outline = await PdfService.instance.getOutline(widget.book.filePath);
-
-    // 2. Load current and next pages
-    _loadPage(_currentPage);
-    if (_currentPage + 1 < widget.book.pageCount) {
-      _loadPage(_currentPage + 1);
-    }
-
-    // 3. Init pdfx for original page mode
-    try {
-      _pdfxController = px.PdfControllerPinch(
-        document: px.PdfDocument.openFile(widget.book.filePath),
-        initialPage: _currentPage + 1,
-      );
-    } catch (_) {}
-
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _loadPage(int pageIndex) async {
-    if (_pages.containsKey(pageIndex)) return;
-    setState(() => _isLoadingPage = true);
-
-    final content = await PdfService.instance.loadPageContent(
-      bookId: widget.book.id ?? 0,
-      filePath: widget.book.filePath,
-      pageIndex: pageIndex,
-      totalPages: widget.book.pageCount,
-    );
-
-    if (mounted) {
-      setState(() {
-        _pages[pageIndex] = content;
-        _isLoadingPage = false;
-      });
+  void _onTtsStateChanged() {
+    final tts = TtsService.instance.state.value;
+    if (tts.isActive && tts.bookId == widget.book.id && tts.currentPage != _currentPage) {
+      // TtsService already persisted this position.
+      _changePage(tts.currentPage, persist: false);
     }
   }
 
-  void _changePage(int newPage) {
-    if (newPage < 0 || newPage >= widget.book.pageCount) return;
+  Future<void> _loadBookmarksAndOutline() async {
+    final bookmarksFuture = DatabaseHelper.instance.getBookmarks(_bookId);
+    final outline = await PdfService.instance.getOutline(widget.book.filePath);
+    final bookmarks = await bookmarksFuture;
+    if (!mounted) return;
     setState(() {
-      _currentPage = newPage;
+      _bookmarks = bookmarks;
+      _outline = outline;
     });
+  }
 
-    DatabaseHelper.instance.updateProgress(widget.book.id ?? 0, newPage);
-    _loadPage(newPage);
-    if (newPage + 1 < widget.book.pageCount) _loadPage(newPage + 1);
+  /// Loads a page's text unless it is already loaded or loading. Does not call
+  /// setState synchronously, so it is safe to call while building.
+  Future<void> _loadPage(int pageIndex) async {
+    if (pageIndex < 0 || pageIndex >= _pageCount) return;
+    if (_pages.containsKey(pageIndex) || !_loadingPages.add(pageIndex)) return;
 
-    if (_pdfxController != null && _pdfxController!.page != newPage + 1) {
-      _pdfxController?.animateToPage(
-        pageNumber: newPage + 1,
-        duration: const Duration(milliseconds: 250),
-        curve: Curves.easeInOut,
+    try {
+      final content = await PdfService.instance.loadPageContent(
+        bookId: _bookId,
+        filePath: widget.book.filePath,
+        pageIndex: pageIndex,
+        totalPages: _pageCount,
       );
+      if (mounted) setState(() => _pages[pageIndex] = content);
+    } finally {
+      _loadingPages.remove(pageIndex);
     }
+  }
+
+  void _changePage(int newPage, {bool persist = true}) {
+    if (newPage < 0 || newPage >= _pageCount || newPage == _currentPage) return;
+    setState(() => _currentPage = newPage);
+
+    if (persist) DatabaseHelper.instance.updateProgress(_bookId, newPage);
+    _loadPage(newPage);
+    _loadPage(newPage + 1);
 
     if (_singlePageScrollController.hasClients) {
       _singlePageScrollController.jumpTo(0);
     }
   }
 
-  void _toggleBookmark() async {
-    final bookId = widget.book.id ?? 0;
+  Future<void> _reloadBookmarks() async {
+    final bookmarks = await DatabaseHelper.instance.getBookmarks(_bookId);
+    if (mounted) setState(() => _bookmarks = bookmarks);
+  }
+
+  Future<void> _toggleBookmark() async {
     final existing = _bookmarks.where((b) => b.pageIndex == _currentPage).toList();
 
     if (existing.isNotEmpty) {
-      for (var b in existing) {
-        if (b.id != null) await DatabaseHelper.instance.deleteBookmark(b.id!);
+      for (final bookmark in existing) {
+        if (bookmark.id != null) await DatabaseHelper.instance.deleteBookmark(bookmark.id!);
       }
     } else {
-      final newBm = Bookmark(
-        bookId: bookId,
+      await DatabaseHelper.instance.insertBookmark(Bookmark(
+        bookId: _bookId,
         pageIndex: _currentPage,
         title: 'Trang ${_currentPage + 1}',
         createdAt: DateTime.now().millisecondsSinceEpoch,
-      );
-      await DatabaseHelper.instance.insertBookmark(newBm);
+      ));
     }
 
-    _bookmarks = await DatabaseHelper.instance.getBookmarks(bookId);
-    if (mounted) setState(() {});
+    await _reloadBookmarks();
   }
 
   void _toggleTts() {
@@ -162,6 +154,33 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
+  void _toggleControls() {
+    setState(() => _controlsVisible = !_controlsVisible);
+  }
+
+  void _toggleViewMode() {
+    final settings = SettingsService.instance.settings.value;
+    final next = settings.viewMode == ViewMode.reflow ? ViewMode.originalPage : ViewMode.reflow;
+    SettingsService.instance.update(settings.copyWith(viewMode: next));
+  }
+
+  void _openContents() {
+    showDialog(
+      context: context,
+      builder: (_) => TableOfContentsDialog(
+        outline: _outline,
+        bookmarks: _bookmarks,
+        currentPage: _currentPage,
+        totalPages: _pageCount,
+        onSelectPage: _changePage,
+        onDeleteBookmark: (id) async {
+          await DatabaseHelper.instance.deleteBookmark(id);
+          await _reloadBookmarks();
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isBookmarked = _bookmarks.any((b) => b.pageIndex == _currentPage);
@@ -169,235 +188,56 @@ class _ReaderScreenState extends State<ReaderScreen> {
     return ValueListenableBuilder<ReaderSettings>(
       valueListenable: SettingsService.instance.settings,
       builder: (context, settings, _) {
-        final bgColor = settings.backgroundColor;
-        final textColor = settings.textColor;
-
         return Scaffold(
-          backgroundColor: bgColor,
+          backgroundColor: settings.backgroundColor,
           body: Stack(
             children: [
-              // 1. Reading Canvas
-              Positioned.fill(
-                child: settings.viewMode == ViewMode.reflow
-                    ? (settings.isContinuousScroll
-                        ? _buildContinuousReflowView(settings, textColor)
-                        : _buildSinglePageReflowView(settings, textColor))
-                    : _buildOriginalPageView(),
-              ),
+              // 1. Reading canvas
+              Positioned.fill(child: _buildCanvas(settings)),
 
-              // 2. Animated Top App Bar
+              // 2. Top app bar
               AnimatedPositioned(
-                duration: const Duration(milliseconds: 200),
+                duration: _controlsAnimation,
                 top: _controlsVisible ? 0 : -100,
                 left: 0,
                 right: 0,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.98),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.1),
-                        blurRadius: 8,
-                      ),
-                    ],
-                  ),
-                  child: SafeArea(
-                    bottom: false,
-                    child: Row(
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.arrow_back_rounded),
-                          onPressed: () {
-                            TtsService.instance.stop();
-                            Navigator.pop(context);
-                          },
-                          tooltip: 'Trở về thư viện',
-                        ),
-                        Expanded(
-                          child: Text(
-                            widget.book.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                          ),
-                        ),
-                        // View mode toggle
-                        IconButton(
-                          icon: Icon(
-                            settings.viewMode == ViewMode.reflow
-                                ? Icons.picture_as_pdf_rounded
-                                : Icons.menu_book_rounded,
-                          ),
-                          onPressed: () {
-                            final next = settings.viewMode == ViewMode.reflow
-                                ? ViewMode.originalPage
-                                : ViewMode.reflow;
-                            SettingsService.instance.update(settings.copyWith(viewMode: next));
-                          },
-                          tooltip: settings.viewMode == ViewMode.reflow
-                              ? 'Xem trang gốc PDF'
-                              : 'Chế độ đọc chữ (Reflow)',
-                        ),
-                        // TTS Headphones icon
-                        ValueListenableBuilder<TtsState>(
-                          valueListenable: TtsService.instance.state,
-                          builder: (context, tts, _) {
-                            final isTtsActive = tts.isPlaying || tts.isPaused;
-                            return IconButton(
-                              icon: Icon(
-                                Icons.headphones_rounded,
-                                color: isTtsActive ? Theme.of(context).colorScheme.primary : null,
-                              ),
-                              onPressed: _toggleTts,
-                              tooltip: 'Sách nói (TTS)',
-                            );
-                          },
-                        ),
-                        // Bookmark icon
-                        IconButton(
-                          icon: Icon(
-                            isBookmarked ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
-                            color: isBookmarked ? Theme.of(context).colorScheme.primary : null,
-                          ),
-                          onPressed: _toggleBookmark,
-                          tooltip: 'Đánh dấu trang',
-                        ),
-                        // Table of Contents
-                        IconButton(
-                          icon: const Icon(Icons.list_rounded),
-                          onPressed: () {
-                            showDialog(
-                              context: context,
-                              builder: (ctx) => TableOfContentsDialog(
-                                outline: _outline,
-                                bookmarks: _bookmarks,
-                                currentPage: _currentPage,
-                                totalPages: widget.book.pageCount,
-                                onSelectPage: _changePage,
-                                onDeleteBookmark: (id) async {
-                                  await DatabaseHelper.instance.deleteBookmark(id);
-                                  _bookmarks = await DatabaseHelper.instance.getBookmarks(widget.book.id ?? 0);
-                                  if (mounted) setState(() {});
-                                },
-                              ),
-                            );
-                          },
-                          tooltip: 'Mục lục & Đánh dấu',
-                        ),
-                      ],
-                    ),
-                  ),
+                child: ReaderTopBar(
+                  title: widget.book.title,
+                  viewMode: settings.viewMode,
+                  isBookmarked: isBookmarked,
+                  onBack: () {
+                    // Stop now rather than after the pop transition finishes.
+                    TtsService.instance.stop();
+                    Navigator.pop(context);
+                  },
+                  onToggleViewMode: _toggleViewMode,
+                  onToggleTts: _toggleTts,
+                  onToggleBookmark: _toggleBookmark,
+                  onOpenContents: _openContents,
                 ),
               ),
 
-              // 3. Animated Bottom Control Bar
+              // 3. Bottom control bar, replaced by the player while TTS is active
               ValueListenableBuilder<TtsState>(
                 valueListenable: TtsService.instance.state,
-                builder: (context, tts, _) {
-                  final isTtsActive = tts.isPlaying || tts.isPaused;
+                builder: (context, tts, child) {
                   return AnimatedPositioned(
-                    duration: const Duration(milliseconds: 200),
-                    bottom: (_controlsVisible && !isTtsActive) ? 0 : -140,
+                    duration: _controlsAnimation,
+                    bottom: (_controlsVisible && !tts.isActive) ? 0 : -140,
                     left: 0,
                     right: 0,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.98),
-                        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.15),
-                            blurRadius: 12,
-                          ),
-                        ],
-                      ),
-                      child: SafeArea(
-                        top: false,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              // Progress info
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text(
-                                    'Trang ${_currentPage + 1} / ${widget.book.pageCount}',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 13,
-                                      color: Theme.of(context).colorScheme.primary,
-                                    ),
-                                  ),
-                                  Text(
-                                    '${((_currentPage + 1) * 100 / widget.book.pageCount).toInt()}%',
-                                    style: const TextStyle(fontSize: 12, color: Colors.grey),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              // Action buttons row
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                                children: [
-                                  IconButton.filledTonal(
-                                    icon: const Icon(Icons.format_size_rounded),
-                                    onPressed: () {
-                                      showModalBottomSheet(
-                                        context: context,
-                                        isScrollControlled: true,
-                                        builder: (_) => const TypographyBottomSheet(),
-                                      );
-                                    },
-                                    tooltip: 'Cỡ chữ & Font',
-                                  ),
-                                  IconButton.filledTonal(
-                                    icon: const Icon(Icons.color_lens_rounded),
-                                    onPressed: () {
-                                      showModalBottomSheet(
-                                        context: context,
-                                        isScrollControlled: true,
-                                        builder: (_) => const ThemeBottomSheet(),
-                                      );
-                                    },
-                                    tooltip: 'Màu nền & Theme',
-                                  ),
-                                  IconButton.filledTonal(
-                                    icon: const Icon(Icons.layers_rounded),
-                                    onPressed: () {
-                                      final next = settings.viewMode == ViewMode.reflow
-                                          ? ViewMode.originalPage
-                                          : ViewMode.reflow;
-                                      SettingsService.instance.update(settings.copyWith(viewMode: next));
-                                    },
-                                    tooltip: 'Đổi chế độ xem',
-                                  ),
-                                  IconButton.filledTonal(
-                                    icon: Icon(
-                                      settings.isContinuousScroll
-                                          ? Icons.swap_vert_rounded
-                                          : Icons.swap_horiz_rounded,
-                                    ),
-                                    onPressed: () {
-                                      SettingsService.instance.update(
-                                        settings.copyWith(isContinuousScroll: !settings.isContinuousScroll),
-                                      );
-                                    },
-                                    tooltip: settings.isContinuousScroll ? 'Đang cuộn dọc' : 'Đang lật trang',
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
+                    child: child!,
                   );
                 },
+                child: ReaderBottomBar(
+                  currentPage: _currentPage,
+                  pageCount: _pageCount,
+                  settings: settings,
+                  onToggleViewMode: _toggleViewMode,
+                ),
               ),
 
-              // 4. Floating TTS Player Bar
+              // 4. Floating TTS player bar
               Positioned(
                 bottom: 0,
                 left: 0,
@@ -408,10 +248,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
                     return TtsPlayerBar(
                       state: tts,
                       onTogglePlay: _toggleTts,
-                      onPrevious: () => TtsService.instance.previousParagraph(),
-                      onNext: () => TtsService.instance.nextParagraph(),
-                      onStop: () => TtsService.instance.stop(),
-                      onSetSpeed: (speed) => TtsService.instance.setSpeechRate(speed),
+                      onPrevious: TtsService.instance.previousParagraph,
+                      onNext: TtsService.instance.nextParagraph,
+                      onStop: TtsService.instance.stop,
+                      onSetSpeed: TtsService.instance.setSpeechRate,
                     );
                   },
                 ),
@@ -423,29 +263,49 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  // --- Single Page View with Horizontal Swipe, Tap Zones & TTS Highlighting ---
-  Widget _buildSinglePageReflowView(ReaderSettings settings, Color textColor) {
-    final pageContent = _pages[_currentPage];
+  Widget _buildCanvas(ReaderSettings settings) {
+    if (settings.viewMode == ViewMode.originalPage) {
+      return GestureDetector(
+        onTap: _toggleControls,
+        child: OriginalPdfView(
+          filePath: widget.book.filePath,
+          currentPage: _currentPage,
+          onPageChanged: _changePage,
+        ),
+      );
+    }
+    return settings.isContinuousScroll
+        ? _buildContinuousReflowView(settings)
+        : _buildSinglePageReflowView(settings);
+  }
+
+  // --- Single page: horizontal swipe, tap zones on the left and right edges ---
+  Widget _buildSinglePageReflowView(ReaderSettings settings) {
+    final paragraphs = _pages[_currentPage]?.paragraphs;
+    final hintStyle = TextStyle(
+      fontSize: 11,
+      color: settings.textColor.withValues(alpha: 0.5),
+    );
 
     return GestureDetector(
       onHorizontalDragEnd: (details) {
-        if (details.primaryVelocity != null) {
-          if (details.primaryVelocity! < -100) {
-            _changePage(_currentPage + 1); // Swipe left -> Next
-          } else if (details.primaryVelocity! > 100) {
-            _changePage(_currentPage - 1); // Swipe right -> Prev
-          }
+        final velocity = details.primaryVelocity;
+        if (velocity == null) return;
+        if (velocity < -100) {
+          _changePage(_currentPage + 1); // Swipe left -> next
+        } else if (velocity > 100) {
+          _changePage(_currentPage - 1); // Swipe right -> previous
         }
       },
       onTapUp: (details) {
         final screenWidth = MediaQuery.of(context).size.width;
         final x = details.globalPosition.dx;
         if (x < screenWidth * 0.22) {
-          _changePage(_currentPage - 1); // Tap left 22% -> Prev
+          _changePage(_currentPage - 1);
         } else if (x > screenWidth * 0.78) {
-          _changePage(_currentPage + 1); // Tap right 22% -> Next
+          _changePage(_currentPage + 1);
         } else {
-          setState(() => _controlsVisible = !_controlsVisible); // Center -> Toggle
+          _toggleControls();
         }
       },
       child: SafeArea(
@@ -453,105 +313,32 @@ class _ReaderScreenState extends State<ReaderScreen> {
           padding: EdgeInsets.symmetric(horizontal: settings.horizontalPadding.toDouble()),
           child: Column(
             children: [
-              const SizedBox(height: 56), // Header space
-              // Page header indicator
+              const SizedBox(height: 56), // Space for the top bar
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(
-                    'Trang ${_currentPage + 1} / ${widget.book.pageCount}',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: textColor.withValues(alpha: 0.5),
-                    ),
-                  ),
-                  Text(
-                    'Vuốt ngang để sang trang',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: textColor.withValues(alpha: 0.5),
-                    ),
-                  ),
+                  Text('Trang ${_currentPage + 1} / $_pageCount', style: hintStyle),
+                  Text('Vuốt ngang để sang trang', style: hintStyle),
                 ],
               ),
               const SizedBox(height: 12),
               Expanded(
-                child: _isLoadingPage && pageContent == null
+                child: paragraphs == null
                     ? const Center(child: CircularProgressIndicator())
                     : ListView.builder(
                         controller: _singlePageScrollController,
-                        itemCount: (pageContent?.paragraphs.length ?? 0) + 1,
+                        itemCount: paragraphs.length + 1,
                         itemBuilder: (context, index) {
-                          if (index < (pageContent?.paragraphs.length ?? 0)) {
-                            final paragraph = pageContent!.paragraphs[index];
-
-                            return ValueListenableBuilder<TtsState>(
-                              valueListenable: TtsService.instance.state,
-                              builder: (context, tts, _) {
-                                final isSpeaking = (tts.isPlaying || tts.isPaused) &&
-                                    tts.bookId == widget.book.id &&
-                                    tts.currentPage == _currentPage &&
-                                    tts.currentParagraphIndex == index;
-
-                                return Container(
-                                  margin: EdgeInsets.only(bottom: settings.fontSize * 0.7),
-                                  padding: isSpeaking
-                                      ? const EdgeInsets.symmetric(horizontal: 10, vertical: 6)
-                                      : EdgeInsets.zero,
-                                  decoration: isSpeaking
-                                      ? BoxDecoration(
-                                          color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.15),
-                                          borderRadius: BorderRadius.circular(10),
-                                        )
-                                      : null,
-                                  child: Text(
-                                    paragraph,
-                                    textAlign: settings.isJustified ? TextAlign.justify : TextAlign.start,
-                                    style: TextStyle(
-                                      color: isSpeaking ? Theme.of(context).colorScheme.primary : textColor,
-                                      fontSize: settings.fontSize,
-                                      height: settings.lineHeightMultiplier,
-                                      fontFamily: settings.fontFamilyName,
-                                      fontWeight: isSpeaking ? FontWeight.bold : FontWeight.normal,
-                                    ),
-                                  ),
-                                );
-                              },
-                            );
-                          } else {
-                            // End of page card
-                            if (_currentPage < widget.book.pageCount - 1) {
-                              return Padding(
-                                padding: const EdgeInsets.only(top: 20, bottom: 80),
-                                child: InkWell(
-                                  onTap: () => _changePage(_currentPage + 1),
-                                  borderRadius: BorderRadius.circular(14),
-                                  child: Container(
-                                    padding: const EdgeInsets.all(16),
-                                    decoration: BoxDecoration(
-                                      color: textColor.withValues(alpha: 0.08),
-                                      borderRadius: BorderRadius.circular(14),
-                                    ),
-                                    child: Row(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        Text(
-                                          'Hết trang ${_currentPage + 1} • Sang Trang ${_currentPage + 2}',
-                                          style: TextStyle(
-                                            color: textColor,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Icon(Icons.arrow_forward_rounded, color: textColor, size: 18),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              );
-                            }
-                            return const SizedBox(height: 80);
+                          if (index == paragraphs.length) {
+                            return _buildEndOfPageCard(settings.textColor);
                           }
+                          return ReaderParagraph(
+                            text: paragraphs[index],
+                            bookId: widget.book.id,
+                            pageIndex: _currentPage,
+                            paragraphIndex: index,
+                            settings: settings,
+                          );
                         },
                       ),
               ),
@@ -562,109 +349,85 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  // --- Continuous Vertical Scroll Mode ---
-  Widget _buildContinuousReflowView(ReaderSettings settings, Color textColor) {
-    return GestureDetector(
-      onTap: () => setState(() => _controlsVisible = !_controlsVisible),
-      child: SafeArea(
-        child: ListView.builder(
-          controller: _continuousScrollController,
-          padding: EdgeInsets.symmetric(
-            horizontal: settings.horizontalPadding.toDouble(),
-            vertical: 60,
+  Widget _buildEndOfPageCard(Color textColor) {
+    if (_currentPage >= _pageCount - 1) return const SizedBox(height: 80);
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 20, bottom: 80),
+      child: InkWell(
+        onTap: () => _changePage(_currentPage + 1),
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: textColor.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(14),
           ),
-          itemCount: widget.book.pageCount,
-          itemBuilder: (context, pageIdx) {
-            final page = _pages[pageIdx];
-
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // Page divider
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 20),
-                  child: Center(
-                    child: Text(
-                      '─── Trang ${pageIdx + 1} / ${widget.book.pageCount} ───',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: textColor.withValues(alpha: 0.5),
-                      ),
-                    ),
-                  ),
-                ),
-                if (page != null)
-                  ...page.paragraphs.asMap().entries.map((entry) {
-                    final pIdx = entry.key;
-                    final text = entry.value;
-
-                    return ValueListenableBuilder<TtsState>(
-                      valueListenable: TtsService.instance.state,
-                      builder: (context, tts, _) {
-                        final isSpeaking = (tts.isPlaying || tts.isPaused) &&
-                            tts.bookId == widget.book.id &&
-                            tts.currentPage == pageIdx &&
-                            tts.currentParagraphIndex == pIdx;
-
-                        return Container(
-                          margin: EdgeInsets.only(bottom: settings.fontSize * 0.7),
-                          padding: isSpeaking
-                              ? const EdgeInsets.symmetric(horizontal: 10, vertical: 6)
-                              : EdgeInsets.zero,
-                          decoration: isSpeaking
-                              ? BoxDecoration(
-                                  color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.15),
-                                  borderRadius: BorderRadius.circular(10),
-                                )
-                              : null,
-                          child: Text(
-                            text,
-                            textAlign: settings.isJustified ? TextAlign.justify : TextAlign.start,
-                            style: TextStyle(
-                              color: isSpeaking ? Theme.of(context).colorScheme.primary : textColor,
-                              fontSize: settings.fontSize,
-                              height: settings.lineHeightMultiplier,
-                              fontFamily: settings.fontFamilyName,
-                              fontWeight: isSpeaking ? FontWeight.bold : FontWeight.normal,
-                            ),
-                          ),
-                        );
-                      },
-                    );
-                  })
-                else
-                  FutureBuilder(
-                    future: _loadPage(pageIdx),
-                    builder: (_, _) => const Padding(
-                      padding: EdgeInsets.all(24),
-                      child: Center(child: CircularProgressIndicator()),
-                    ),
-                  ),
-              ],
-            );
-          },
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                'Hết trang ${_currentPage + 1} • Sang Trang ${_currentPage + 2}',
+                style: TextStyle(color: textColor, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(width: 8),
+              Icon(Icons.arrow_forward_rounded, color: textColor, size: 18),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  // --- Original Page View via PDFX ---
-  Widget _buildOriginalPageView() {
-    if (_pdfxController == null) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
+  // --- Continuous vertical scroll: one list item per page, loaded lazily ---
+  Widget _buildContinuousReflowView(ReaderSettings settings) {
     return GestureDetector(
-      onTap: () => setState(() => _controlsVisible = !_controlsVisible),
-      child: px.PdfViewPinch(
-        controller: _pdfxController!,
-        onPageChanged: (page) {
-          final newIdx = page - 1;
-          if (newIdx != _currentPage) {
-            _changePage(newIdx);
-          }
-        },
+      onTap: _toggleControls,
+      child: SafeArea(
+        child: ListView.builder(
+          padding: EdgeInsets.symmetric(
+            horizontal: settings.horizontalPadding.toDouble(),
+            vertical: 60,
+          ),
+          itemCount: _pageCount,
+          itemBuilder: (context, pageIndex) {
+            final paragraphs = _pages[pageIndex]?.paragraphs;
+            if (paragraphs == null) _loadPage(pageIndex);
+
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  child: Center(
+                    child: Text(
+                      '─── Trang ${pageIndex + 1} / $_pageCount ───',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: settings.textColor.withValues(alpha: 0.5),
+                      ),
+                    ),
+                  ),
+                ),
+                if (paragraphs == null)
+                  const Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Center(child: CircularProgressIndicator()),
+                  )
+                else
+                  for (final (index, text) in paragraphs.indexed)
+                    ReaderParagraph(
+                      text: text,
+                      bookId: widget.book.id,
+                      pageIndex: pageIndex,
+                      paragraphIndex: index,
+                      settings: settings,
+                    ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }

@@ -5,6 +5,13 @@ import '../../../services/settings_service.dart';
 class TypographyBottomSheet extends StatelessWidget {
   const TypographyBottomSheet({super.key});
 
+  static const List<(FontFamilyType, String)> _fontLabels = [
+    (FontFamilyType.system, 'Mặc định'),
+    (FontFamilyType.serif, 'Có chân (Serif)'),
+    (FontFamilyType.sansSerif, 'Không chân (Sans)'),
+    (FontFamilyType.monospace, 'Đơn cách (Mono)'),
+  ];
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -87,34 +94,14 @@ class TypographyBottomSheet extends StatelessWidget {
                   Wrap(
                     spacing: 8,
                     children: [
-                      ChoiceChip(
-                        label: const Text('Mặc định'),
-                        selected: settings.fontFamily == FontFamilyType.system,
-                        onSelected: (_) {
-                          SettingsService.instance.update(settings.copyWith(fontFamily: FontFamilyType.system));
-                        },
-                      ),
-                      ChoiceChip(
-                        label: const Text('Có chân (Serif)'),
-                        selected: settings.fontFamily == FontFamilyType.serif,
-                        onSelected: (_) {
-                          SettingsService.instance.update(settings.copyWith(fontFamily: FontFamilyType.serif));
-                        },
-                      ),
-                      ChoiceChip(
-                        label: const Text('Không chân (Sans)'),
-                        selected: settings.fontFamily == FontFamilyType.sansSerif,
-                        onSelected: (_) {
-                          SettingsService.instance.update(settings.copyWith(fontFamily: FontFamilyType.sansSerif));
-                        },
-                      ),
-                      ChoiceChip(
-                        label: const Text('Đơn cách (Mono)'),
-                        selected: settings.fontFamily == FontFamilyType.monospace,
-                        onSelected: (_) {
-                          SettingsService.instance.update(settings.copyWith(fontFamily: FontFamilyType.monospace));
-                        },
-                      ),
+                      for (final (family, label) in _fontLabels)
+                        ChoiceChip(
+                          label: Text(label),
+                          selected: settings.fontFamily == family,
+                          onSelected: (_) {
+                            SettingsService.instance.update(settings.copyWith(fontFamily: family));
+                          },
+                        ),
                     ],
                   ),
                   const SizedBox(height: 16),

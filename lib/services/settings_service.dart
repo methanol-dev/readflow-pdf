@@ -46,18 +46,32 @@ class SettingsService {
     );
   }
 
-  Future<void> update(ReaderSettings newSettings) async {
-    settings.value = newSettings;
+  /// Applies [next] and persists only the fields that changed.
+  Future<void> update(ReaderSettings next) async {
+    final prev = settings.value;
+    settings.value = next;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble(_keyFontSize, newSettings.fontSize);
-    await prefs.setDouble(_keyLineHeight, newSettings.lineHeightMultiplier);
-    await prefs.setInt(_keyFontFamily, newSettings.fontFamily.index);
-    await prefs.setBool(_keyJustified, newSettings.isJustified);
-    await prefs.setInt(_keyPadding, newSettings.horizontalPadding);
-    await prefs.setBool(_keyContinuous, newSettings.isContinuousScroll);
-    await prefs.setInt(_keyViewMode, newSettings.viewMode.index);
-    await prefs.setInt(_keyThemePreset, newSettings.themePreset.index);
-    await prefs.setInt(_keyCustomBg, newSettings.customBgColorHex);
-    await prefs.setInt(_keyCustomText, newSettings.customTextColorHex);
+    await Future.wait([
+      if (prev.fontSize != next.fontSize)
+        prefs.setDouble(_keyFontSize, next.fontSize),
+      if (prev.lineHeightMultiplier != next.lineHeightMultiplier)
+        prefs.setDouble(_keyLineHeight, next.lineHeightMultiplier),
+      if (prev.fontFamily != next.fontFamily)
+        prefs.setInt(_keyFontFamily, next.fontFamily.index),
+      if (prev.isJustified != next.isJustified)
+        prefs.setBool(_keyJustified, next.isJustified),
+      if (prev.horizontalPadding != next.horizontalPadding)
+        prefs.setInt(_keyPadding, next.horizontalPadding),
+      if (prev.isContinuousScroll != next.isContinuousScroll)
+        prefs.setBool(_keyContinuous, next.isContinuousScroll),
+      if (prev.viewMode != next.viewMode)
+        prefs.setInt(_keyViewMode, next.viewMode.index),
+      if (prev.themePreset != next.themePreset)
+        prefs.setInt(_keyThemePreset, next.themePreset.index),
+      if (prev.customBgColorHex != next.customBgColorHex)
+        prefs.setInt(_keyCustomBg, next.customBgColorHex),
+      if (prev.customTextColorHex != next.customTextColorHex)
+        prefs.setInt(_keyCustomText, next.customTextColorHex),
+    ]);
   }
 }

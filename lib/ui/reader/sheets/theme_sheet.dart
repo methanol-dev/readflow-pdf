@@ -6,6 +6,15 @@ import '../../../services/settings_service.dart';
 class ThemeBottomSheet extends StatelessWidget {
   const ThemeBottomSheet({super.key});
 
+  // Display order of the fixed presets, with their labels.
+  static const List<(ReaderThemePreset, String, String)> _presetLabels = [
+    (ReaderThemePreset.sepia, 'Giấy vàng (Bảo vệ mắt)', 'Khuyên dùng khi đọc truyện lâu'),
+    (ReaderThemePreset.classicWhite, 'Trắng tinh khôi', 'Độ tương phản cao, rõ nét'),
+    (ReaderThemePreset.darkNight, 'Đêm tối dịu mắt', 'Giảm chói trong bóng tối'),
+    (ReaderThemePreset.amoledBlack, 'Đen tuyền AMOLED', 'Tiết kiệm pin tối đa cho màn hình OLED'),
+    (ReaderThemePreset.forestGreen, 'Xanh lá tươi mát', 'Thư giãn thị giác tự nhiên'),
+  ];
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -38,75 +47,22 @@ class ThemeBottomSheet extends StatelessWidget {
                   ),
                   const SizedBox(height: 16),
 
-                  _buildPresetItem(
-                    title: 'Giấy vàng (Bảo vệ mắt)',
-                    subtitle: 'Khuyên dùng khi đọc truyện lâu',
-                    bgColor: const Color(0xFFFBF0D9),
-                    textColor: const Color(0xFF5F4B32),
-                    isSelected: settings.themePreset == ReaderThemePreset.sepia,
-                    onTap: () {
-                      SettingsService.instance.update(
-                        settings.copyWith(themePreset: ReaderThemePreset.sepia),
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 10),
-
-                  _buildPresetItem(
-                    title: 'Trắng tinh khôi',
-                    subtitle: 'Độ tương phản cao, rõ nét',
-                    bgColor: const Color(0xFFFFFFFF),
-                    textColor: const Color(0xFF212121),
-                    isSelected: settings.themePreset == ReaderThemePreset.classicWhite,
-                    onTap: () {
-                      SettingsService.instance.update(
-                        settings.copyWith(themePreset: ReaderThemePreset.classicWhite),
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 10),
-
-                  _buildPresetItem(
-                    title: 'Đêm tối dịu mắt',
-                    subtitle: 'Giảm chói trong bóng tối',
-                    bgColor: const Color(0xFF1E1E1E),
-                    textColor: const Color(0xFFD6D6D6),
-                    isSelected: settings.themePreset == ReaderThemePreset.darkNight,
-                    onTap: () {
-                      SettingsService.instance.update(
-                        settings.copyWith(themePreset: ReaderThemePreset.darkNight),
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 10),
-
-                  _buildPresetItem(
-                    title: 'Đen tuyền AMOLED',
-                    subtitle: 'Tiết kiệm pin tối đa cho màn hình OLED',
-                    bgColor: const Color(0xFF000000),
-                    textColor: const Color(0xFFCCCCCC),
-                    isSelected: settings.themePreset == ReaderThemePreset.amoledBlack,
-                    onTap: () {
-                      SettingsService.instance.update(
-                        settings.copyWith(themePreset: ReaderThemePreset.amoledBlack),
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 10),
-
-                  _buildPresetItem(
-                    title: 'Xanh lá tươi mát',
-                    subtitle: 'Thư giãn thị giác tự nhiên',
-                    bgColor: const Color(0xFFE8F5E9),
-                    textColor: const Color(0xFF1B5E20),
-                    isSelected: settings.themePreset == ReaderThemePreset.forestGreen,
-                    onTap: () {
-                      SettingsService.instance.update(
-                        settings.copyWith(themePreset: ReaderThemePreset.forestGreen),
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 16),
+                  for (final (preset, title, subtitle) in _presetLabels) ...[
+                    _buildPresetItem(
+                      title: title,
+                      subtitle: subtitle,
+                      bgColor: preset.background!,
+                      textColor: preset.text!,
+                      isSelected: settings.themePreset == preset,
+                      onTap: () {
+                        SettingsService.instance.update(
+                          settings.copyWith(themePreset: preset),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+                  const SizedBox(height: 6),
 
                   // Tùy chỉnh màu tự do
                   OutlinedButton.icon(

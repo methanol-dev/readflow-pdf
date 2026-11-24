@@ -26,6 +26,9 @@ class TtsState {
     this.currentText = '',
   });
 
+  /// True while a reading session exists, playing or paused.
+  bool get isActive => isPlaying || isPaused;
+
   TtsState copyWith({
     bool? isPlaying,
     bool? isPaused,
@@ -56,15 +59,22 @@ class TtsService {
 
   Book? _currentBook;
   List<String> _currentParagraphs = [];
-  bool _isInitialized = false;
+  Future<void>? _initialization;
 
-  TtsService._init() {
-    _initTts();
+  // Bumped whenever the reading position is replaced, so a page load that
+  // finishes late does not overwrite a newer position.
+  int _positionVersion = 0;
+
+  TtsService._init();
+
+  Future<void> _ensureInitialized() {
+    return _initialization ??= _configureTts().catchError((Object error) {
+      _initialization = null;
+      throw error;
+    });
   }
 
-  Future<void> _initTts() async {
-    if (_isInitialized) return;
-
+  Future<void> _configureTts() async {
     try {
       await _flutterTts.setLanguage('vi-VN');
     } catch (_) {
@@ -74,25 +84,23 @@ class TtsService {
     }
 
     await _flutterTts.setPitch(1.0);
-    await _flutterTts.setSpeechRate(0.5); // Flutter TTS 0.5 is standard 1.0x normal speech
+    await _flutterTts.setSpeechRate(_engineRate(state.value.speechRate));
 
-    _flutterTts.setCompletionHandler(() {
-      _onParagraphCompleted();
-    });
-
+    _flutterTts.setCompletionHandler(_onParagraphCompleted);
     _flutterTts.setErrorHandler((msg) {
       if (kDebugMode) print('TTS error: $msg');
     });
-
-    _isInitialized = true;
   }
+
+  // flutter_tts treats 0.5 as normal speed, so the user-facing 1.0x maps to 0.5.
+  double _engineRate(double userRate) => (userRate * 0.5).clamp(0.2, 1.0);
 
   Future<void> startReading({
     required Book book,
     required int startPage,
     int startParagraph = 0,
   }) async {
-    await _initTts();
+    await _ensureInitialized();
 
     _currentBook = book;
     state.value = state.value.copyWith(
@@ -104,90 +112,100 @@ class TtsService {
       totalPages: book.pageCount,
     );
 
-    await _loadAndSpeakCurrentPage(startParagraph);
+    await _goToPage(startPage, paragraph: startParagraph);
   }
 
-  Future<void> _loadAndSpeakCurrentPage(int targetParagraph) async {
+  /// Moves the reading position to [page] and speaks from [paragraph].
+  /// Pages without text (blank or image-only) are skipped forward; reaching
+  /// the end of the book stops the session.
+  Future<void> _goToPage(int page, {int paragraph = 0}) async {
     final book = _currentBook;
-    if (book == null || !state.value.isPlaying) return;
+    if (book == null) return;
+    final version = ++_positionVersion;
+    final bookId = book.id ?? 0;
 
-    final page = state.value.currentPage;
-    final content = await PdfService.instance.loadPageContent(
-      bookId: book.id ?? 0,
-      filePath: book.filePath,
-      pageIndex: page,
-      totalPages: book.pageCount,
-    );
-
-    _currentParagraphs = content.paragraphs;
-
-    if (_currentParagraphs.isEmpty) {
-      // If page has no text (e.g. image/blank), advance to next page
-      if (page < book.pageCount - 1) {
-        state.value = state.value.copyWith(
-          currentPage: page + 1,
-          currentParagraphIndex: 0,
-        );
-        await DatabaseHelper.instance.updateProgress(book.id ?? 0, page + 1);
-        await _loadAndSpeakCurrentPage(0);
-      } else {
-        stop();
+    var targetPage = page;
+    var targetParagraph = paragraph;
+    List<String> paragraphs;
+    while (true) {
+      if (targetPage >= book.pageCount) {
+        await stop();
+        return;
       }
-      return;
+      final content = await PdfService.instance.loadPageContent(
+        bookId: bookId,
+        filePath: book.filePath,
+        pageIndex: targetPage,
+        totalPages: book.pageCount,
+      );
+      if (version != _positionVersion) return;
+      paragraphs = content.paragraphs;
+      if (paragraphs.isNotEmpty) break;
+      targetPage++;
+      targetParagraph = 0;
     }
 
-    final pIdx = targetParagraph.clamp(0, _currentParagraphs.length - 1);
+    final index = targetParagraph.clamp(0, paragraphs.length - 1);
+    _currentParagraphs = paragraphs;
     state.value = state.value.copyWith(
-      currentParagraphIndex: pIdx,
-      currentText: _currentParagraphs[pIdx],
+      currentPage: targetPage,
+      currentParagraphIndex: index,
+      currentText: paragraphs[index],
+    );
+    unawaited(
+      DatabaseHelper.instance
+          .updateProgress(bookId, targetPage)
+          .catchError((Object _) => 0),
     );
 
-    _speakCurrent();
+    await _speakCurrent();
+  }
+
+  void _goToParagraph(int index) {
+    state.value = state.value.copyWith(
+      currentParagraphIndex: index,
+      currentText: _currentParagraphs[index],
+    );
   }
 
   Future<void> _speakCurrent() async {
-    if (!state.value.isPlaying || state.value.isPaused) return;
+    if (!state.value.isPlaying) return;
 
-    final pIdx = state.value.currentParagraphIndex;
-    if (pIdx >= 0 && pIdx < _currentParagraphs.length) {
-      final text = _currentParagraphs[pIdx].trim();
-      if (text.isNotEmpty) {
-        state.value = state.value.copyWith(currentText: text);
-        await _flutterTts.speak(text);
-      } else {
-        _onParagraphCompleted();
-      }
+    final index = state.value.currentParagraphIndex;
+    if (index < 0 || index >= _currentParagraphs.length) return;
+    await _flutterTts.speak(_currentParagraphs[index]);
+  }
+
+  void _onParagraphCompleted() {
+    if (!state.value.isPlaying) return;
+
+    if (_hasNext) {
+      _advance();
     } else {
-      _onParagraphCompleted();
+      // End of the whole book.
+      stop();
     }
   }
 
-  void _onParagraphCompleted() async {
-    if (!state.value.isPlaying || state.value.isPaused) return;
+  bool get _hasNext {
+    final book = _currentBook;
+    if (book == null) return false;
+    return state.value.currentParagraphIndex + 1 < _currentParagraphs.length ||
+        state.value.currentPage + 1 < book.pageCount;
+  }
 
-    final nextP = state.value.currentParagraphIndex + 1;
-    if (nextP < _currentParagraphs.length) {
-      // Next paragraph on same page
-      state.value = state.value.copyWith(
-        currentParagraphIndex: nextP,
-      );
-      _speakCurrent();
+  bool get _hasPrevious =>
+      _currentBook != null &&
+      (state.value.currentParagraphIndex > 0 || state.value.currentPage > 0);
+
+  /// Moves to the next paragraph, or to the next page after the last one.
+  Future<void> _advance() async {
+    final next = state.value.currentParagraphIndex + 1;
+    if (next < _currentParagraphs.length) {
+      _goToParagraph(next);
+      await _speakCurrent();
     } else {
-      // Completed all paragraphs of this page -> Auto Advance to Next Page!
-      final nextPage = state.value.currentPage + 1;
-      final book = _currentBook;
-      if (book != null && nextPage < book.pageCount) {
-        state.value = state.value.copyWith(
-          currentPage: nextPage,
-          currentParagraphIndex: 0,
-        );
-        // Persist reading progress
-        await DatabaseHelper.instance.updateProgress(book.id ?? 0, nextPage);
-        await _loadAndSpeakCurrentPage(0);
-      } else {
-        // End of whole book!
-        stop();
-      }
+      await _goToPage(state.value.currentPage + 1);
     }
   }
 
@@ -205,10 +223,11 @@ class TtsService {
       isPlaying: true,
       isPaused: false,
     );
-    _speakCurrent();
+    await _speakCurrent();
   }
 
   Future<void> stop() async {
+    _positionVersion++;
     await _flutterTts.stop();
     state.value = state.value.copyWith(
       isPlaying: false,
@@ -218,51 +237,30 @@ class TtsService {
   }
 
   Future<void> nextParagraph() async {
+    if (!_hasNext) return;
     await _flutterTts.stop();
-    final nextP = state.value.currentParagraphIndex + 1;
-    if (nextP < _currentParagraphs.length) {
-      state.value = state.value.copyWith(currentParagraphIndex: nextP);
-      _speakCurrent();
-    } else {
-      final nextPage = state.value.currentPage + 1;
-      final book = _currentBook;
-      if (book != null && nextPage < book.pageCount) {
-        state.value = state.value.copyWith(
-          currentPage: nextPage,
-          currentParagraphIndex: 0,
-        );
-        await _loadAndSpeakCurrentPage(0);
-      }
-    }
+    await _advance();
   }
 
   Future<void> previousParagraph() async {
+    if (!_hasPrevious) return;
     await _flutterTts.stop();
-    final prevP = state.value.currentParagraphIndex - 1;
-    if (prevP >= 0) {
-      state.value = state.value.copyWith(currentParagraphIndex: prevP);
-      _speakCurrent();
+    final previous = state.value.currentParagraphIndex - 1;
+    if (previous >= 0) {
+      _goToParagraph(previous);
+      await _speakCurrent();
     } else {
-      final prevPage = state.value.currentPage - 1;
-      final book = _currentBook;
-      if (book != null && prevPage >= 0) {
-        state.value = state.value.copyWith(
-          currentPage: prevPage,
-          currentParagraphIndex: 0,
-        );
-        await _loadAndSpeakCurrentPage(0);
-      }
+      await _goToPage(state.value.currentPage - 1);
     }
   }
 
   Future<void> setSpeechRate(double rate) async {
     state.value = state.value.copyWith(speechRate: rate);
-    // In FlutterTTS: 0.5 is normal speed (1.0x). Scale accordingly.
-    final flutterRate = (rate * 0.5).clamp(0.2, 1.0);
-    await _flutterTts.setSpeechRate(flutterRate);
+    await _ensureInitialized();
+    await _flutterTts.setSpeechRate(_engineRate(rate));
     if (state.value.isPlaying) {
       await _flutterTts.stop();
-      _speakCurrent();
+      await _speakCurrent();
     }
   }
 }
