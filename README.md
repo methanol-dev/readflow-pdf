@@ -1,69 +1,53 @@
-# ReadFlow: Smart PDF E-Reader with Text Reflow for Android
+# ReadFlow - Trình Đọc Truyện & Sách Nói PDF Đa Nền Tảng (Android & iOS)
 
-[![GitHub release](https://img.shields.io/github/v/release/methanol-dev/readflow-pdf?color=blue&label=Latest%20Release)](https://github.com/methanol-dev/readflow-pdf/releases)
-[![Platform](https://img.shields.io/badge/Platform-Android%208.0%2B-green.svg)](https://android.com)
-[![Kotlin](https://img.shields.io/badge/Kotlin-2.2%2B-purple.svg)](https://kotlinlang.org)
-[![Compose](https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4.svg)](https://developer.android.com/jetpack/compose)
-[![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg)](LICENSE)
-
-> **ReadFlow** là ứng dụng đọc sách và tài liệu PDF chuyên nghiệp dành cho Android, giải quyết triệt để vấn đề chữ nhỏ, mỏi mắt và khó đọc trên màn hình điện thoại bằng công nghệ **Smart Text Reflow (tương tự Liquid Mode của Adobe)** cùng hệ thống tùy biến Typography và bảng màu cao cấp.
+**ReadFlow** là ứng dụng đọc sách và nghe sách nói PDF mã nguồn mở, tối ưu trải nghiệm đọc tiếng Việt với công nghệ dàn trang thông minh (**Reflow Mode**) và trình phát sách nói (**TTS Audiobook**) đọc liên tục toàn bộ tác phẩm trên cả **Android** và **iOS**.
 
 ---
 
-## 🌟 Tính năng nổi bật (Key Features)
+## 🌟 Tính Năng Nổi Bật
 
-### 1. Tùy biến Phông chữ & Văn bản (Typography Customization)
-- **Cỡ chữ linh hoạt (Font Size)**: Thanh trượt mượt mà từ `12sp` đến `36sp` kèm nút tinh chỉnh nhanh `A-` / `A+`.
-- **Khoảng cách dòng (Line Spacing / Height)**: Các nấc tiêu chuẩn đọc sách `1.2x`, `1.4x`, `1.6x`, `1.8x`, `2.0x`.
-- **Bộ font chữ chất lượng cao**:
-  - *Serif (Sách)*: Chuẩn font sách văn học kinh điển, tạo cảm giác như đọc sách giấy.
-  - *Sans-Serif*: Hiện đại, tài liệu học thuật.
-  - *Hệ thống* và *Monospace*.
-- **Căn lề chuẩn mực**: Căn đều 2 bên (Justified) hoặc Căn trái.
-- **Lề mép màn hình (Padding)**: Hẹp (8dp), Vừa (16dp), Rộng (24dp) chống dính mép màn hình cong.
+### 1. 📖 Chế độ đọc chữ thông minh (Reflow Engine)
+- Bóc tách văn bản trực tiếp từ file PDF, tự động sửa lỗi ngắt dòng, gạch nối từ tiếng Việt.
+- Dàn trang vừa vặn với mọi kích thước màn hình điện thoại (Android & iPhone).
+- Hỗ trợ chuyển đổi nhanh giữa **Chế độ đọc chữ (Reflow)** và **Xem trang gốc PDF (Pinch-to-Zoom)**.
 
-### 2. Hệ thống Theme & Bảng màu (Eye-care Themes & Custom Color)
-- **5 Theme thiết kế sẵn**:
-  - **Giấy ngà (Sepia)**: Nền vàng ấm (`#FBF0D9`), chữ than chì (`#3C3836`) — êm mắt tuyệt đối khi đọc lâu.
-  - **OLED Đen**: Nền đen tuyệt đối (`#000000`), chữ xám sáng (`#E0E0E0`) — tiết kiệm pin tối đa cho màn AMOLED.
-  - **Đêm ấm (Warm Dark)**: Nền than chì (`#1C1C1E`), chữ ngà dịu — lọc ánh sáng xanh ban đêm.
-  - **Trắng giấy (Paper White)**: Nền trắng sạch (`#FAFAFA`), chữ xám đen chuẩn mực.
-  - **Xanh dịu (Eye Care)**: Nền xanh lá pastel (`#E4F0E8`), chữ xanh rừng đậm chống mỏi mắt.
-- **Tự chọn màu tự do (Custom Color Picker)**: Tự do phối màu nền và màu chữ bất kỳ theo sở thích cá nhân.
+### 2. 🎧 Sách nói Audiobook TTS Đa nền tảng (Continuous Whole-Book Reader)
+- **Đọc liên tục không giới hạn**: Tự động đọc tuần tự từng đoạn và **tự động chuyển trang tiếp theo** khi đọc hết trang hiện tại cho đến hết toàn bộ file PDF.
+- **Thanh điều khiển Mini-Player hiện đại**: Tạm dừng, phát tiếp, nhảy đoạn kế tiếp, lùi đoạn trước, tùy chỉnh tốc độ đọc (`0.5x`, `0.75x`, `1.0x`, `1.25x`, `1.5x`, `2.0x`).
+- **Tô sáng (Highlight) trực quan**: Tự động làm nổi bật đoạn văn bản đang đọc và cuộn màn hình theo giọng đọc.
+- **Giọng đọc Tiếng Việt chuẩn**: Tự động sử dụng Google Speech Services (Android) hoặc Apple AVSpeechSynthesizer (iOS).
 
-### 3. Trải nghiệm Chuyển trang & Đọc sách Mượt mà (Gesture Navigation)
-- **Vuốt ngang lật trang (Horizontal Swipe)**: Vuốt sang trái để qua trang sau, vuốt sang phải để về trang trước.
-- **Chạm mép màn hình 1 tay (Tap Zones)**: Chạm 20% cạnh phải để Next, 20% cạnh trái để Prev, vùng giữa để mở thanh công cụ.
-- **Tự động chuyển trang khi cuộn hết**: Thẻ hành động nhanh xuất hiện ở cuối trang, chỉ 1 chạm là sang trang mới.
-- **Chế độ Cuộn dọc liên tục (Continuous Vertical Scroll)**: Đọc từ đầu đến cuối sách không cần lật trang, cuộn mượt mà như webtoon.
-- **Dual-View Mode (Chế độ xem kép)**: Bấm 1 nút để chuyển tức thì giữa **Chế độ đọc chữ (Reflow)** và **Xem trang in gốc (Original PDF)** với tính năng phóng to / thu nhỏ (Pinch-to-zoom).
-- **Tránh che khuất 3 phím hệ thống**: Toàn bộ thanh điều khiển dưới được tối ưu Insets, không bao giờ bị 3 phím Back, Home, Recents che khuất.
+### 3. 🎨 Cá nhân hóa hiển thị & Bảo vệ mắt (Eye-Care Themes)
+- 5 bộ màu bảo vệ mắt: **Giấy vàng Sepia**, **Trắng tinh khôi**, **Đêm tối dịu mắt**, **Đen tuyền AMOLED**, **Xanh lá thư giãn**.
+- Công cụ chọn màu tùy chỉnh tự do cho nền và chữ.
+- Tùy chỉnh kích thước chữ (12 - 34 pt), khoảng cách giãn dòng (1.2x - 2.6x), kiểu font (Mặc định, Có chân Serif, Không chân Sans, Đơn cách Mono), căn lề hai bên (Justify).
+- Hỗ trợ cả 2 chế độ: **Lật từng trang (Vuốt ngang/Chạm viền)** hoặc **Cuộn dọc liên tục như đọc báo**.
 
-### 4. Quản lý Thư viện & Trạng thái đọc (Local Persistence)
-- Tự động nhớ vị trí trang đọc dở cho từng cuốn sách (lưu trong SQLite).
-- Tự động trích xuất trang đầu tiên làm ảnh bìa (Book Cover Thumbnail).
-- Đánh dấu trang yêu thích (Bookmarks) và Mục lục (Table of Contents / Outline).
-- Tự sao lưu file vào bộ nhớ an toàn của app.
-- Hỗ trợ "Open with ReadFlow" khi mở file PDF từ Zalo, Telegram, Google Drive hoặc File Manager.
+### 4. 📑 Mục lục & Đánh dấu trang
+- Tự động trích xuất Mục lục (Table of Contents / Bookmarks) tích hợp sẵn trong file PDF.
+- Đánh dấu trang yêu thích (Bookmark) không giới hạn.
 
 ---
 
-## 🛠 Kiến trúc & Công nghệ (Tech Stack)
+## 🛠️ Công Nghệ & Kiến Trúc (Version 3)
 
-* **Language**: 100% Kotlin
-* **UI Framework**: Jetpack Compose + Material 3 Design
-* **PDF Core**: Apache PDFBox-Android (Text extraction & Normalization) + Android Native `PdfRenderer` (Crisp page bitmaps)
-* **Architecture**: Clean Architecture + MVI/MVVM + Kotlin Coroutines & StateFlow
-* **Database & Storage**: SQLite OpenHelper + SharedPreferences
-
----
-
-## 📥 Cài đặt ứng dụng (Download APK)
-
-Tải file APK phiên bản mới nhất tại:
-👉 **[Download ReadFlow APK (GitHub Releases)](https://github.com/methanol-dev/readflow-pdf/releases/latest)**
+- **Framework**: [Flutter](https://flutter.dev) (Dart 3.x)
+- **PDF Engine**: [Syncfusion Flutter PDF](https://pub.dev/packages/syncfusion_flutter_pdf) & [pdfx](https://pub.dev/packages/pdfx)
+- **Audio Engine**: [flutter_tts](https://pub.dev/packages/flutter_tts)
+- **Local Database**: SQLite qua [sqflite](https://pub.dev/packages/sqflite) & [shared_preferences](https://pub.dev/packages/shared_preferences)
+- **File Management**: [file_picker](https://pub.dev/packages/file_picker) & [path_provider](https://pub.dev/packages/path_provider)
+- **CI/CD Build**: GitHub Actions (tự động biên dịch ra `.apk` cho Android và `.ipa` cho iOS)
 
 ---
 
-## 📄 License
-Phát hành theo giấy phép [Apache License 2.0](LICENSE).
+## 📲 Hướng Dẫn Cài Đặt
+
+### Android
+- Tải file `ReadFlow-v3.0.0-Android.apk` từ mục [Releases](https://github.com/methanol-dev/readflow-pdf/releases) và cài đặt trực tiếp lên máy.
+
+### iOS (iPhone / iPad)
+- Tải file `ReadFlow-v3.0.0-iOS.ipa` từ mục [Releases](https://github.com/methanol-dev/readflow-pdf/releases).
+- Sử dụng công cụ cài đặt sideload miễn phí từ máy tính (như [Sideloadly](https://sideloadly.io/) hoặc [AltStore](https://altstore.io/)):
+  1. Cắm cáp iPhone vào máy tính Windows.
+  2. Mở Sideloadly, kéo file `.ipa` vào và nhập Apple ID của bạn.
+  3. Bấm **Start** để cài đặt trực tiếp lên iPhone.
