@@ -7,14 +7,24 @@ import 'pdf_text_layout.dart';
 /// wherever the PDF switches font (common for Vietnamese diacritics). So the
 /// page is read twice, as layout text and as positioned lines, and
 /// [paragraphsFromPageText] combines the two.
+///
+/// If layout extraction throws or produces empty text (for example when a
+/// stream uses 0pt fonts or triggers a layout math error), this falls back to
+/// positioned lines or plain extraction instead of failing the page.
 List<String> extractPageParagraphs(PdfDocument document, int pageIndex) {
   final extractor = PdfTextExtractor(document);
 
-  final layoutText = extractor.extractText(
-    startPageIndex: pageIndex,
-    endPageIndex: pageIndex,
-    layoutText: true,
-  );
+  var layoutText = '';
+  var layoutFailed = false;
+  try {
+    layoutText = extractor.extractText(
+      startPageIndex: pageIndex,
+      endPageIndex: pageIndex,
+      layoutText: true,
+    );
+  } catch (_) {
+    layoutFailed = true;
+  }
 
   List<PdfLinePosition>? positions;
   try {
@@ -29,7 +39,23 @@ List<String> extractPageParagraphs(PdfDocument document, int pageIndex) {
     // Paragraphs are then inferred from the text alone.
   }
 
-  return paragraphsFromPageText(layoutText, positions: positions);
+  final combined = paragraphsFromPageText(layoutText, positions: positions);
+  if (combined.isNotEmpty) return combined;
+
+  if (layoutFailed || layoutText.trim().isEmpty) {
+    try {
+      final plainText = extractor.extractText(
+        startPageIndex: pageIndex,
+        endPageIndex: pageIndex,
+        layoutText: false,
+      );
+      if (plainText.trim().isNotEmpty) {
+        return paragraphsFromPageText(plainText, positions: positions);
+      }
+    } catch (_) {}
+  }
+
+  return combined;
 }
 
 PdfLinePosition _toLinePosition(TextLine line) {

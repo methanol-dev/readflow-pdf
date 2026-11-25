@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import '../../models/book.dart';
 import '../../services/database_helper.dart';
 import '../../services/pdf_service.dart';
@@ -16,6 +18,7 @@ class LibraryScreen extends StatefulWidget {
 class _LibraryScreenState extends State<LibraryScreen> {
   List<Book> _books = [];
   bool _isLoading = true;
+  bool _isImporting = false;
 
   @override
   void initState() {
@@ -35,43 +38,109 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
   }
 
+  Future<Directory> _booksDirectory() async {
+    final docsDir = await getApplicationDocumentsDirectory();
+    final booksDir = Directory(p.join(docsDir.path, 'books'));
+    if (!await booksDir.exists()) {
+      await booksDir.create(recursive: true);
+    }
+    return booksDir;
+  }
+
+  Future<Book?> _findExistingBook({
+    String? sourcePath,
+    required String title,
+    required int sizeBytes,
+  }) async {
+    if (sourcePath != null) {
+      final existingByPath = await DatabaseHelper.instance.getBookByPath(sourcePath);
+      if (existingByPath != null && await File(existingByPath.filePath).exists()) {
+        return existingByPath;
+      }
+    }
+    for (final book in _books) {
+      if (book.title == title &&
+          book.fileSizeBytes == sizeBytes &&
+          await File(book.filePath).exists()) {
+        return book;
+      }
+    }
+    return null;
+  }
+
   Future<void> _pickAndOpenPdf() async {
+    if (_isImporting) return;
     try {
       final files = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['pdf'],
       );
 
-      if (files.isEmpty || files.first.path == null) {
+      if (files.isEmpty) {
         return;
       }
 
-      final path = files.first.path!;
-      final file = File(path);
-      if (!await file.exists()) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Không thể tìm thấy file PDF đã chọn')),
-          );
-        }
-        return;
-      }
+      if (mounted) setState(() => _isImporting = true);
 
-      final existing = await DatabaseHelper.instance.getBookByPath(path);
-      if (existing != null) {
-        _openReader(existing);
-        return;
-      }
-
-      // Calculate title and page count
-      final rawName = files.first.name;
+      final picked = files.first;
+      final sourcePath = picked.path;
+      final rawName = picked.name;
       final title = rawName.replaceAll(RegExp(r'\.pdf$', caseSensitive: false), '');
-      final pageCount = await PdfService.instance.getPageCount(path);
-      final sizeBytes = await file.length();
+      final booksDir = await _booksDirectory();
+      final safeBase = rawName.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
+      final destPath = p.join(
+        booksDir.path,
+        '${DateTime.now().millisecondsSinceEpoch}_$safeBase',
+      );
+
+      final int sizeBytes;
+      if (sourcePath != null) {
+        final sourceFile = File(sourcePath);
+        if (!await sourceFile.exists()) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Không thể tìm thấy file PDF đã chọn')),
+            );
+          }
+          return;
+        }
+        sizeBytes = await sourceFile.length();
+        final existingBook = await _findExistingBook(
+          sourcePath: sourcePath,
+          title: title,
+          sizeBytes: sizeBytes,
+        );
+        if (existingBook != null) {
+          _openReader(existingBook);
+          return;
+        }
+        await sourceFile.copy(destPath);
+      } else {
+        // Fallback when the platform picker only provides a content stream/URI.
+        final sink = File(destPath).openWrite();
+        try {
+          await sink.addStream(picked.readAsByteStream());
+          await sink.flush();
+        } finally {
+          await sink.close();
+        }
+        sizeBytes = await File(destPath).length();
+        final existingBook = await _findExistingBook(
+          title: title,
+          sizeBytes: sizeBytes,
+        );
+        if (existingBook != null) {
+          await File(destPath).delete();
+          _openReader(existingBook);
+          return;
+        }
+      }
+
+      final pageCount = await PdfService.instance.getPageCount(destPath);
 
       final newBook = Book(
         title: title,
-        filePath: path,
+        filePath: destPath,
         pageCount: pageCount > 0 ? pageCount : 1,
         lastReadPage: 0,
         lastReadTime: DateTime.now().millisecondsSinceEpoch,
@@ -89,6 +158,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
           SnackBar(content: Text('Lỗi khi mở file: $e')),
         );
       }
+    } finally {
+      if (mounted) setState(() => _isImporting = false);
     }
   }
 
@@ -117,6 +188,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
               Navigator.pop(ctx);
               if (book.id != null) {
                 await DatabaseHelper.instance.deleteBook(book.id!);
+                // Delete our managed copy if it lives inside app books storage.
+                try {
+                  final booksDir = await _booksDirectory();
+                  if (p.isWithin(booksDir.path, book.filePath)) {
+                    final file = File(book.filePath);
+                    if (await file.exists()) await file.delete();
+                  }
+                } catch (_) {}
                 _loadBooks();
               }
             },
@@ -154,9 +233,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
               ? _buildEmptyState()
               : _buildBookList(),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _pickAndOpenPdf,
-        icon: const Icon(Icons.add_rounded),
-        label: const Text('Mở file PDF'),
+        onPressed: _isImporting ? null : _pickAndOpenPdf,
+        icon: _isImporting
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.add_rounded),
+        label: Text(_isImporting ? 'Đang mở...' : 'Mở file PDF'),
       ),
     );
   }
@@ -196,7 +281,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
       itemCount: _books.length,
       itemBuilder: (context, index) {
         final book = _books[index];
-        final percent = ((book.lastReadPage + 1) * 100 / book.pageCount).clamp(0, 100).toInt();
+        final pageCount = book.pageCount > 0 ? book.pageCount : 1;
+        final percent = ((book.lastReadPage + 1) * 100 / pageCount).clamp(0, 100).toInt();
 
         return Card(
           elevation: 2,
@@ -239,7 +325,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         Row(
                           children: [
                             Text(
-                              'Đang đọc trang ${book.lastReadPage + 1} / ${book.pageCount}',
+                              'Đang đọc trang ${book.lastReadPage + 1} / $pageCount',
                               style: const TextStyle(fontSize: 12, color: Colors.grey),
                             ),
                             const Spacer(),
@@ -255,7 +341,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         ),
                         const SizedBox(height: 6),
                         LinearProgressIndicator(
-                          value: (book.lastReadPage + 1) / book.pageCount,
+                          value: (book.lastReadPage + 1) / pageCount,
                           borderRadius: BorderRadius.circular(4),
                           minHeight: 4,
                         ),

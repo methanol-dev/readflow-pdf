@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../models/book.dart';
 import '../../models/bookmark.dart';
@@ -26,56 +27,85 @@ class ReaderScreen extends StatefulWidget {
 
 class _ReaderScreenState extends State<ReaderScreen> {
   static const _controlsAnimation = Duration(milliseconds: 200);
+  static const _continuousCenterKey = ValueKey('continuous-center');
 
   late int _currentPage;
+  late int _continuousAnchorPage;
+  int _continuousScrollEpoch = 0;
+  bool _wasContinuousScroll = false;
   bool _controlsVisible = true;
   final Map<int, PdfPageContent> _pages = {};
   final Set<int> _loadingPages = {};
+  final Map<int, GlobalKey> _continuousPageKeys = {};
   List<Bookmark> _bookmarks = [];
   List<OutlineItem> _outline = [];
 
   final ScrollController _singlePageScrollController = ScrollController();
+  final ScrollController _continuousScrollController = ScrollController();
 
   int get _bookId => widget.book.id ?? 0;
-  int get _pageCount => widget.book.pageCount;
+  int get _pageCount => widget.book.pageCount > 0 ? widget.book.pageCount : 1;
 
   @override
   void initState() {
     super.initState();
     _currentPage = widget.book.lastReadPage.clamp(0, _pageCount - 1);
+    _continuousAnchorPage = _currentPage;
+    _wasContinuousScroll = SettingsService.instance.settings.value.isContinuousScroll;
+
     _loadPage(_currentPage);
     _loadPage(_currentPage + 1);
     _loadBookmarksAndOutline();
 
+    SettingsService.instance.settings.addListener(_onSettingsChanged);
     // Follow the page TTS is reading.
     TtsService.instance.state.addListener(_onTtsStateChanged);
   }
 
   @override
   void dispose() {
+    SettingsService.instance.settings.removeListener(_onSettingsChanged);
     final tts = TtsService.instance;
     tts.state.removeListener(_onTtsStateChanged);
     // The player controls only exist on this screen, so playback ends with it.
     if (tts.state.value.isActive && tts.state.value.bookId == widget.book.id) {
       tts.stop();
     }
-    PdfService.instance.releaseDocument();
+    unawaited(PdfService.instance.releaseDocument());
     _singlePageScrollController.dispose();
+    _continuousScrollController.dispose();
     super.dispose();
+  }
+
+  void _onSettingsChanged() {
+    final settings = SettingsService.instance.settings.value;
+    final isContinuous = settings.isContinuousScroll;
+    if (isContinuous && !_wasContinuousScroll) {
+      setState(() {
+        _continuousAnchorPage = _currentPage;
+        _continuousScrollEpoch++;
+      });
+    }
+    _wasContinuousScroll = isContinuous;
   }
 
   void _onTtsStateChanged() {
     final tts = TtsService.instance.state.value;
     if (tts.isActive && tts.bookId == widget.book.id && tts.currentPage != _currentPage) {
       // TtsService already persisted this position.
-      _changePage(tts.currentPage, persist: false);
+      _changePage(tts.currentPage, persist: false, preferSmoothScroll: true);
     }
   }
 
   Future<void> _loadBookmarksAndOutline() async {
-    final bookmarksFuture = DatabaseHelper.instance.getBookmarks(_bookId);
-    final outline = await PdfService.instance.getOutline(widget.book.filePath);
+    final bookmarksFuture = DatabaseHelper.instance
+        .getBookmarks(_bookId)
+        .catchError((Object _) => <Bookmark>[]);
+    final outlineFuture = PdfService.instance
+        .getOutline(widget.book.filePath)
+        .catchError((Object _) => <OutlineItem>[]);
     final bookmarks = await bookmarksFuture;
+    final outline = await outlineFuture;
     if (!mounted) return;
     setState(() {
       _bookmarks = bookmarks;
@@ -97,16 +127,59 @@ class _ReaderScreenState extends State<ReaderScreen> {
         totalPages: _pageCount,
       );
       if (mounted) setState(() => _pages[pageIndex] = content);
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _pages[pageIndex] = PdfPageContent(
+            pageIndex: pageIndex,
+            paragraphs: const ['Không thể đọc nội dung trang này.'],
+            isError: true,
+          );
+        });
+      }
     } finally {
       _loadingPages.remove(pageIndex);
     }
   }
 
-  void _changePage(int newPage, {bool persist = true}) {
-    if (newPage < 0 || newPage >= _pageCount || newPage == _currentPage) return;
-    setState(() => _currentPage = newPage);
+  void _retryPage(int pageIndex) {
+    setState(() {
+      _pages.remove(pageIndex);
+    });
+    _loadPage(pageIndex);
+  }
 
-    if (persist) DatabaseHelper.instance.updateProgress(_bookId, newPage);
+  void _changePage(
+    int newPage, {
+    bool persist = true,
+    bool preferSmoothScroll = false,
+  }) {
+    if (newPage < 0 || newPage >= _pageCount || newPage == _currentPage) return;
+
+    final isContinuous = SettingsService.instance.settings.value.isContinuousScroll;
+    if (isContinuous) {
+      final targetCtx = _continuousPageKeys[newPage]?.currentContext;
+      if (preferSmoothScroll && targetCtx != null) {
+        setState(() => _currentPage = newPage);
+        Scrollable.ensureVisible(
+          targetCtx,
+          duration: const Duration(milliseconds: 250),
+          alignment: 0.08,
+        );
+      } else {
+        setState(() {
+          _currentPage = newPage;
+          _continuousAnchorPage = newPage;
+          _continuousScrollEpoch++;
+        });
+      }
+    } else {
+      setState(() => _currentPage = newPage);
+    }
+
+    if (persist) {
+      unawaited(DatabaseHelper.instance.updateProgress(_bookId, newPage).catchError((Object _) => 0));
+    }
     _loadPage(newPage);
     _loadPage(newPage + 1);
 
@@ -281,7 +354,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   // --- Single page: horizontal swipe, tap zones on the left and right edges ---
   Widget _buildSinglePageReflowView(ReaderSettings settings) {
-    final paragraphs = _pages[_currentPage]?.paragraphs;
+    final page = _pages[_currentPage];
+    if (page == null) _loadPage(_currentPage);
+
     final hintStyle = TextStyle(
       fontSize: 11,
       color: settings.textColor.withValues(alpha: 0.5),
@@ -323,28 +398,85 @@ class _ReaderScreenState extends State<ReaderScreen> {
               ),
               const SizedBox(height: 12),
               Expanded(
-                child: paragraphs == null
+                child: page == null
                     ? const Center(child: CircularProgressIndicator())
-                    : ListView.builder(
-                        controller: _singlePageScrollController,
-                        itemCount: paragraphs.length + 1,
-                        itemBuilder: (context, index) {
-                          if (index == paragraphs.length) {
-                            return _buildEndOfPageCard(settings.textColor);
-                          }
-                          return ReaderParagraph(
-                            text: paragraphs[index],
-                            bookId: widget.book.id,
-                            pageIndex: _currentPage,
-                            paragraphIndex: index,
-                            settings: settings,
-                          );
-                        },
-                      ),
+                    : page.isError || page.paragraphs.isEmpty
+                        ? ListView(
+                            controller: _singlePageScrollController,
+                            children: [
+                              _buildEmptyOrErrorNotice(
+                                pageIndex: _currentPage,
+                                isError: page.isError,
+                                textColor: settings.textColor,
+                              ),
+                              _buildEndOfPageCard(settings.textColor),
+                            ],
+                          )
+                        : ListView.builder(
+                            controller: _singlePageScrollController,
+                            itemCount: page.paragraphs.length + 1,
+                            itemBuilder: (context, index) {
+                              if (index == page.paragraphs.length) {
+                                return _buildEndOfPageCard(settings.textColor);
+                              }
+                              return ReaderParagraph(
+                                text: page.paragraphs[index],
+                                bookId: widget.book.id,
+                                pageIndex: _currentPage,
+                                paragraphIndex: index,
+                                settings: settings,
+                              );
+                            },
+                          ),
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyOrErrorNotice({
+    required int pageIndex,
+    required bool isError,
+    required Color textColor,
+  }) {
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: textColor.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            isError
+                ? 'Không thể đọc nội dung trang ${pageIndex + 1}.'
+                : 'Trang này không có văn bản (trang trống hoặc trang ảnh).',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: textColor.withValues(alpha: 0.75), fontSize: 14),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            alignment: WrapAlignment.center,
+            children: [
+              if (isError)
+                FilledButton.tonalIcon(
+                  onPressed: () => _retryPage(pageIndex),
+                  icon: const Icon(Icons.refresh_rounded, size: 18),
+                  label: const Text('Thử lại'),
+                ),
+              TextButton.icon(
+                onPressed: _toggleViewMode,
+                icon: const Icon(Icons.picture_as_pdf_rounded, size: 18),
+                label: const Text('Xem trang gốc PDF'),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -379,56 +511,140 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  // --- Continuous vertical scroll: one list item per page, loaded lazily ---
+  // --- Continuous vertical scroll: bidirectional around _continuousAnchorPage ---
   Widget _buildContinuousReflowView(ReaderSettings settings) {
+    final anchor = _continuousAnchorPage.clamp(0, _pageCount - 1);
+
     return GestureDetector(
       onTap: _toggleControls,
       child: SafeArea(
-        child: ListView.builder(
-          padding: EdgeInsets.symmetric(
-            horizontal: settings.horizontalPadding.toDouble(),
-            vertical: 60,
-          ),
-          itemCount: _pageCount,
-          itemBuilder: (context, pageIndex) {
-            final paragraphs = _pages[pageIndex]?.paragraphs;
-            if (paragraphs == null) _loadPage(pageIndex);
-
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 20),
-                  child: Center(
-                    child: Text(
-                      '─── Trang ${pageIndex + 1} / $_pageCount ───',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: settings.textColor.withValues(alpha: 0.5),
-                      ),
-                    ),
+        child: Padding(
+          padding: EdgeInsets.symmetric(horizontal: settings.horizontalPadding.toDouble()),
+          child: NotificationListener<ScrollNotification>(
+            onNotification: (notification) => _handleContinuousScroll(notification),
+            child: CustomScrollView(
+              key: ValueKey('continuous-$anchor-$_continuousScrollEpoch'),
+              controller: _continuousScrollController,
+              center: _continuousCenterKey,
+              slivers: [
+                if (anchor > 0)
+                  SliverList.builder(
+                    itemCount: anchor,
+                    itemBuilder: (context, index) {
+                      final pageIndex = anchor - 1 - index;
+                      return _buildContinuousPageItem(pageIndex, settings);
+                    },
                   ),
+                SliverList.builder(
+                  key: _continuousCenterKey,
+                  itemCount: _pageCount - anchor,
+                  itemBuilder: (context, index) {
+                    final pageIndex = anchor + index;
+                    return _buildContinuousPageItem(pageIndex, settings);
+                  },
                 ),
-                if (paragraphs == null)
-                  const Padding(
-                    padding: EdgeInsets.all(24),
-                    child: Center(child: CircularProgressIndicator()),
-                  )
-                else
-                  for (final (index, text) in paragraphs.indexed)
-                    ReaderParagraph(
-                      text: text,
-                      bookId: widget.book.id,
-                      pageIndex: pageIndex,
-                      paragraphIndex: index,
-                      settings: settings,
-                    ),
               ],
-            );
-          },
+            ),
+          ),
         ),
       ),
     );
+  }
+
+  Widget _buildContinuousPageItem(int pageIndex, ReaderSettings settings) {
+    final page = _pages[pageIndex];
+    if (page == null) _loadPage(pageIndex);
+    final key = _continuousPageKeys[pageIndex] ??= GlobalKey();
+
+    return Column(
+      key: key,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (pageIndex == 0 || pageIndex == _continuousAnchorPage)
+          const SizedBox(height: 52),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 20),
+          child: Center(
+            child: Text(
+              '─── Trang ${pageIndex + 1} / $_pageCount ───',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: settings.textColor.withValues(alpha: 0.5),
+              ),
+            ),
+          ),
+        ),
+        if (page == null)
+          const Padding(
+            padding: EdgeInsets.all(24),
+            child: Center(child: CircularProgressIndicator()),
+          )
+        else if (page.isError || page.paragraphs.isEmpty)
+          _buildEmptyOrErrorNotice(
+            pageIndex: pageIndex,
+            isError: page.isError,
+            textColor: settings.textColor,
+          )
+        else
+          for (final (index, text) in page.paragraphs.indexed)
+            ReaderParagraph(
+              text: text,
+              bookId: widget.book.id,
+              pageIndex: pageIndex,
+              paragraphIndex: index,
+              settings: settings,
+            ),
+        if (pageIndex == _pageCount - 1) const SizedBox(height: 100),
+      ],
+    );
+  }
+
+  bool _handleContinuousScroll(ScrollNotification notification) {
+    if (notification is! ScrollUpdateNotification &&
+        notification is! ScrollEndNotification) {
+      return false;
+    }
+
+    final topLimit = MediaQuery.of(context).padding.top + 120;
+    int? activePage;
+    double bestDistance = double.infinity;
+
+    for (final entry in _continuousPageKeys.entries) {
+      final ctx = entry.value.currentContext;
+      if (ctx == null) continue;
+      final renderBox = ctx.findRenderObject();
+      if (renderBox is! RenderBox || !renderBox.attached) continue;
+      final top = renderBox.localToGlobal(Offset.zero).dy;
+      final bottom = top + renderBox.size.height;
+      if (bottom < topLimit - 40) continue;
+      final distance = (top - topLimit).abs();
+      if (top <= topLimit && bottom >= topLimit) {
+        activePage = entry.key;
+        break;
+      }
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        activePage = entry.key;
+      }
+    }
+
+    if (activePage != null && activePage != _currentPage) {
+      setState(() => _currentPage = activePage!);
+      if (notification is ScrollEndNotification) {
+        unawaited(
+          DatabaseHelper.instance
+              .updateProgress(_bookId, activePage)
+              .catchError((Object _) => 0),
+        );
+      }
+    } else if (notification is ScrollEndNotification) {
+      unawaited(
+        DatabaseHelper.instance
+            .updateProgress(_bookId, _currentPage)
+            .catchError((Object _) => 0),
+      );
+    }
+    return false;
   }
 }

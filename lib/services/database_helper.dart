@@ -7,13 +7,17 @@ import '../models/bookmark.dart';
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
   static Database? _database;
+  static Future<Database>? _openingDatabase;
 
   DatabaseHelper._init();
 
-  Future<Database> get database async {
-    if (_database != null) return _database!;
-    _database = await _initDB('readflow.db');
-    return _database!;
+  Future<Database> get database {
+    final existing = _database;
+    if (existing != null) return Future.value(existing);
+    return _openingDatabase ??= _initDB('readflow.db').then((db) {
+      _database = db;
+      return db;
+    }).whenComplete(() => _openingDatabase = null);
   }
 
   Future<Database> _initDB(String filePath) async {
@@ -22,16 +26,16 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
     );
   }
 
   Future _upgradeDB(Database db, int oldVersion, int newVersion) async {
-    if (oldVersion < 2) {
-      // Text extraction changed (spacing and paragraphs now follow the page
-      // layout), so pages cached by the old extractor are stale.
+    if (oldVersion < 3) {
+      // Text extraction changed (layout fallback and safe parser), so pages
+      // cached by earlier extractors (including stale empty caches) are cleared.
       await db.delete('page_cache');
     }
   }
